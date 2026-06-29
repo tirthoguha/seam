@@ -1,0 +1,17 @@
+# Run the app as a container talking to Docker Model Runner on the same host.
+# Build the image first (no Dockerfile needed — Spring Boot buildpacks):
+#   mvn spring-boot:build-image
+# Then: docker model pull ai/gemma3 && docker compose up -d
+services:
+  app:
+    image: omnillm:latest
+    ports:
+      - "8080:8080"
+    environment:
+      DEFAULT_BACKEND: docker
+      # Reach the host's Model Runner from inside the container via its gateway DNS:
+      DMR_BASE_URL: http://model-runner.docker.internal/engines/v1
+      DMR_MODEL: ai/gemma3
+      # To use OpenAI cloud instead, comment out the two lines above and set:
+      # DEFAULT_BACKEND: openai
+      # OPENAI_API_KEY: sk-...
