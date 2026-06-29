@@ -87,8 +87,22 @@ An unknown `backend` returns `400` with the list of configured backends.
 
 ### `GET /chat/stream` — Server-Sent Events
 
+Each token is one SSE event whose `data` is a small JSON object — `{"t":"<token>"}` — so whitespace
+survives the SSE "strip one leading space" rule and a browser `EventSource` can read it directly. A
+named `done` event (carrying `{backend, model}`) ends the turn; failures arrive as a named `error`
+event.
+
 ```bash
 curl -N "localhost:8080/chat/stream?message=Tell%20me%20a%20joke&backend=docker"
+# data:{"t":"Why"}  data:{"t":" did"} ...  event:done data:{"backend":"docker","model":"ai/gemma3"}
+```
+
+A browser client:
+
+```js
+const es = new EventSource('http://localhost:8080/chat/stream?message=hi');
+es.onmessage = e => append(JSON.parse(e.data).t);
+es.addEventListener('done', () => es.close());
 ```
 
 ### Health / metrics (Spring Boot Actuator)
@@ -96,6 +110,28 @@ curl -N "localhost:8080/chat/stream?message=Tell%20me%20a%20joke&backend=docker"
 ```bash
 curl -s localhost:8080/actuator/health
 curl -s localhost:8080/actuator/metrics
+```
+
+---
+
+## Web UI
+
+A single-file chat client lives in [`web/index.html`](web/index.html) — a *lite* stack
+([Alpine.js](https://alpinejs.dev) + [marked](https://marked.js.org), both via CDN), deliberately
+kept **out** of the backend. It has a backend selector, model override, a stream/blocking toggle,
+live markdown rendering, and a per-reply `backend · model` badge.
+
+Because the page runs on a different origin than the API, the app enables narrow CORS for the chat
+endpoints (localhost origins + `file://`); see
+[`CorsConfig`](src/main/java/com/tirthoguha/omnillm/config/CorsConfig.java). Start the app, then
+open the page any way you like:
+
+```bash
+# simplest: open the file directly (apiBase defaults to http://localhost:8080, editable in the header)
+open web/index.html
+
+# or serve it (any static server works)
+python3 -m http.server 5500 --directory web   # then visit http://localhost:5500
 ```
 
 ---

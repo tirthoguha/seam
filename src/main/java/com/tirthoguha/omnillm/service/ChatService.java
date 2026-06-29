@@ -2,11 +2,13 @@ package com.tirthoguha.omnillm.service;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.Map;
 import java.util.concurrent.Executor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -67,15 +69,33 @@ public class ChatService {
             try {
                 provider.streamTokens(prompt, token -> {
                     try {
-                        emitter.send(token);
+                        // One JSON object per token: the text lives inside a JSON string, so it
+                        // survives the SSE "strip one leading space" rule (raw tokens would lose
+                        // whitespace). Clients use plain EventSource + JSON.parse(e.data).
+                        emitter.send(SseEmitter.event()
+                                .data(Map.of("t", token), MediaType.APPLICATION_JSON));
                     } catch (IOException e) {
                         throw new UncheckedIOException(e);
                     }
                 });
+                // Named terminal event so the client knows the turn is over and can close the
+                // connection (otherwise EventSource auto-reconnects and re-runs the request).
+                emitter.send(SseEmitter.event()
+                        .name("done")
+                        .data(Map.of("backend", backend, "model", prompt.model()),
+                                MediaType.APPLICATION_JSON));
                 emitter.complete();
             } catch (Exception e) {
                 log.warn("Streaming chat failed for backend '{}' model '{}'", backend, prompt.model(), e);
-                emitter.completeWithError(e);
+                try {
+                    emitter.send(SseEmitter.event()
+                            .name("error")
+                            .data(Map.of("message", String.valueOf(e.getMessage())),
+                                    MediaType.APPLICATION_JSON));
+                    emitter.complete();
+                } catch (Exception sendFailure) {
+                    emitter.completeWithError(e);
+                }
             }
         });
 
