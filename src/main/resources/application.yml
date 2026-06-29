@@ -1,0 +1,33 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: omnillm
+
+# Production-ready endpoints. Health is public; keep the rest minimal for a POC.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+# Both backends are configured at once; a request picks one (field "backend"), else the default
+# below is used. The `docker` profile just flips the default — every backend stays callable:
+#   --spring.profiles.active=docker   (default-backend -> docker)
+# or override the default directly: --app.llm.default-backend=openai   (env: DEFAULT_BACKEND)
+app:
+  llm:
+    default-backend: ${DEFAULT_BACKEND:docker}
+    backends:
+      openai:
+        base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+        api-key: ${OPENAI_API_KEY:not-needed}
+        model: ${OPENAI_MODEL:gpt-4o-mini}
+      docker:
+        base-url: ${DMR_BASE_URL:http://localhost:12434/engines/v1}
+        api-key: docker          # ignored by Model Runner, but the SDK requires a non-blank key
+        model: ${DMR_MODEL:ai/gemma3}

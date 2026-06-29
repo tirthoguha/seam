@@ -1,0 +1,11 @@
+# The `docker` profile just makes Docker Model Runner the default backend; all backends defined in
+# application.yml remain callable per-request via the "backend" field.
+#
+# Enable Docker Model Runner with host-side TCP, verify, then pull a model:
+#   docker desktop enable model-runner --tcp 12434
+#   docker model status
+#   docker model pull ai/gemma3
+# Default host port is 12434.
+app:
+  llm:
+    default-backend: docker
