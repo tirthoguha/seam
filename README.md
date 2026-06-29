@@ -21,21 +21,8 @@ and OpenAI cloud for the next — no restart.
 
 ## Prerequisites
 
-- **Java 17** and **Maven**.
-  The build is pinned to Java 17 via a Maven toolchain, so it works even if your default `mvn`
-  runs on a newer JDK. This needs a JDK 17 entry in `~/.m2/toolchains.xml`:
-  ```xml
-  <toolchains>
-    <toolchain>
-      <type>jdk</type>
-      <provides><version>17</version></provides>
-      <configuration>
-        <jdkHome>/path/to/jdk-17</jdkHome>   <!-- e.g. `/usr/libexec/java_home -v 17` on macOS -->
-      </configuration>
-    </toolchain>
-  </toolchains>
-  ```
-  (The build fails fast with a clear message if it's missing.)
+- **Java 17** and **Maven** to run the app directly. (For the container path below you only
+  need Docker — the image builds the jar itself.)
 
 - **At least one backend** to talk to:
   - **Docker Model Runner** (local, free, offline) — enable it once and pull a model:
@@ -135,18 +122,19 @@ and `DMR_BASE_URL` / `DMR_MODEL`. See
 
 ## Run with Docker Compose
 
-No Dockerfile needed — build the image with Spring Boot buildpacks, then bring it up. The app
-runs in a container and reaches **Docker Model Runner on the host** via its gateway DNS:
+The [`Dockerfile`](Dockerfile) builds the jar and packages it (multi-stage, JDK 17 → JRE 17),
+so one command builds the image and starts it — no local Maven or JDK needed. The app runs in a
+container and reaches **Docker Model Runner on the host** via its gateway DNS:
 
 ```bash
-mvn spring-boot:build-image        # produces omnillm:latest
-docker model pull ai/gemma3        # pull the model into the host's Model Runner
-docker compose up -d               # uses compose.yaml in this repo
+docker model pull ai/gemma3        # pull the model into the host's Model Runner (once)
+docker compose up --build -d       # builds from the Dockerfile, then starts (compose.yaml)
 
 curl -s localhost:8080/chat -H 'Content-Type: application/json' \
   -d '{"message":"hello from a container"}'
 ```
 
+After the first build, `docker compose up -d` reuses the image; add `--build` again when code changes.
 See [`compose.yaml`](compose.yaml) — it has the env vars to switch to OpenAI cloud instead.
 
 > On a plain Docker Engine host (no Docker Desktop), install Model Runner as a plugin

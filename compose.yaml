@@ -1,9 +1,10 @@
 # Run the app as a container talking to Docker Model Runner on the same host.
-# Build the image first (no Dockerfile needed — Spring Boot buildpacks):
-#   mvn spring-boot:build-image
-# Then: docker model pull ai/gemma3 && docker compose up -d
+# One self-contained command builds the image from the Dockerfile and starts it:
+#   docker model pull ai/gemma3   # once, so the model is available
+#   docker compose up --build -d
 services:
   app:
+    build: .
     image: omnillm:latest
     ports:
       - "8080:8080"
