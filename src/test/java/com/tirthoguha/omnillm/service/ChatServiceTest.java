@@ -46,8 +46,8 @@ class ChatServiceTest {
     void setUp() {
         // Two backends configured; "docker" is the default. Each carries its own default model.
         LlmProperties props = new LlmProperties("docker", Map.of(
-                "docker", new LlmProperties.Backend("http://localhost:12434/engines/v1", "docker", "ai/gemma3"),
-                "openai", new LlmProperties.Backend("https://api.openai.com/v1", "k", "gpt-4o-mini")));
+                "docker", new LlmProperties.Backend("http://localhost:12434/engines/v1", "docker", "ai/gemma3", null, null),
+                "openai", new LlmProperties.Backend("https://api.openai.com/v1", "k", "gpt-4o-mini", null, null)));
         ChatProviderRegistry registry = new ChatProviderRegistry(
                 Map.of("docker", docker, "openai", openai), "docker");
         // Run streaming inline so the test is deterministic (no real thread pool needed).
@@ -65,7 +65,11 @@ class ChatServiceTest {
         ArgumentCaptor<ChatPrompt> captor = ArgumentCaptor.forClass(ChatPrompt.class);
         verify(docker).chat(captor.capture());
         assertThat(captor.getValue().model()).isEqualTo("ai/gemma3");   // docker's default model
-        assertThat(captor.getValue().message()).isEqualTo("hello");
+        assertThat(captor.getValue().messages()).singleElement()
+                .satisfies(m -> {
+                    assertThat(m.role()).isEqualTo(ChatPrompt.Role.USER);
+                    assertThat(m.content()).isEqualTo("hello");
+                });
     }
 
     @Test
@@ -120,6 +124,7 @@ class ChatServiceTest {
         ArgumentCaptor<ChatPrompt> captor = ArgumentCaptor.forClass(ChatPrompt.class);
         verify(docker).streamTokens(captor.capture(), any());
         assertThat(captor.getValue().model()).isEqualTo("ai/gemma3");   // docker default applied
-        assertThat(captor.getValue().message()).isEqualTo("hi");
+        assertThat(captor.getValue().messages()).singleElement()
+                .satisfies(m -> assertThat(m.content()).isEqualTo("hi"));
     }
 }

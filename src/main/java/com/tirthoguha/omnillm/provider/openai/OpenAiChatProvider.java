@@ -1,5 +1,6 @@
 package com.tirthoguha.omnillm.provider.openai;
 
+import java.util.List;
 import java.util.function.Consumer;
 
 import com.openai.client.OpenAIClient;
@@ -56,6 +57,11 @@ public class OpenAiChatProvider implements ChatProvider {
     }
 
     @Override
+    public List<String> availableModels() {
+        return OpenAiModels.list(name, client);
+    }
+
+    @Override
     public void streamTokens(ChatPrompt prompt, Consumer<String> onToken) {
         ChatCompletionCreateParams params = buildParams(prompt);
 
@@ -69,9 +75,15 @@ public class OpenAiChatProvider implements ChatProvider {
     }
 
     private ChatCompletionCreateParams buildParams(ChatPrompt prompt) {
-        return ChatCompletionCreateParams.builder()
-                .model(prompt.model())
-                .addUserMessage(prompt.message())
-                .build();
+        ChatCompletionCreateParams.Builder builder = ChatCompletionCreateParams.builder()
+                .model(prompt.model());
+        for (ChatPrompt.Message message : prompt.messages()) {
+            switch (message.role()) {
+                case SYSTEM -> builder.addSystemMessage(message.content());
+                case ASSISTANT -> builder.addAssistantMessage(message.content());
+                case USER -> builder.addUserMessage(message.content());
+            }
+        }
+        return builder.build();
     }
 }

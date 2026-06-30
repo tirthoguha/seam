@@ -1,5 +1,6 @@
 package com.tirthoguha.omnillm.provider;
 
+import java.util.List;
 import java.util.function.Consumer;
 
 /**
@@ -28,4 +29,15 @@ public interface ChatProvider {
      * returns when the stream is exhausted. Exceptions propagate to the caller.
      */
     void streamTokens(ChatPrompt prompt, Consumer<String> onToken);
+
+    /**
+     * The model ids this backend actually offers (its own {@code /v1/models}), used to advertise the
+     * full catalog at the gateway as {@code <backend>:<id>}. Default is empty: a provider that can't
+     * enumerate models simply contributes none, and the gateway falls back to the configured default.
+     * May throw {@link ChatProviderException} if the backend is reachable-but-failing; the caller
+     * decides how to degrade.
+     */
+    default List<String> availableModels() {
+        return List.of();
+    }
 }

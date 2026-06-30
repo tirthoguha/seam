@@ -105,6 +105,57 @@ es.onmessage = e => append(JSON.parse(e.data).t);
 es.addEventListener('done', () => es.close());
 ```
 
+### OpenAI-compatible gateway (`/v1`) — for Open WebUI etc.
+
+OmniLLM also speaks the OpenAI API, so any OpenAI client can drive it while requests still flow
+through the same backend-routing seam. The OpenAI `model` field doubles as the backend selector,
+read as `<backend>:<model>` (a bare backend name uses that backend's default model).
+
+```bash
+curl -s localhost:8080/v1/models          # one entry per backend: docker:ai/gemma3, openai:gpt-4o-mini
+
+curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model":"docker:ai/gemma3",
+  "messages":[{"role":"system","content":"Be terse."},{"role":"user","content":"hi"}]
+}'                                          # add "stream":true for SSE chat.completion.chunk + [DONE]
+```
+
+**Run [Open WebUI](https://github.com/open-webui/open-webui) on top** — one command, two containers
+(the app + Open WebUI, wired together), see [`compose.openwebui.yaml`](compose.openwebui.yaml):
+
+```bash
+docker model pull ai/gemma3                 # pull the local model into Docker Model Runner (once)
+docker compose -f compose.openwebui.yaml up --build -d
+open http://localhost:3000                 # then pick a model (see below) and chat
+```
+
+**Local vs cloud — pick from the model picker.** Open WebUI's model dropdown lists one entry per
+backend:
+
+- `docker:ai/gemma3` — the **local** model (Docker Model Runner), works offline, no key.
+- `openai:gpt-4o-mini` — **OpenAI cloud**, needs a key (below).
+
+**Keys go in a gitignored `.env`** next to the compose file (never commit them). Only needed for the
+cloud backend (and, optionally, to speed up Open WebUI's first-boot model download):
+
+```bash
+# .env  (in the repo root)
+OPENAI_API_KEY=sk-...     # enables the openai:gpt-4o-mini model; omit to stay local-only
+HF_TOKEN=hf_...           # optional: lifts the HuggingFace rate limit on Open WebUI's first boot
+```
+
+After editing `.env`, apply it (env-only change — no rebuild needed):
+
+```bash
+docker compose -f compose.openwebui.yaml up -d
+```
+
+Open WebUI's chats, settings, and uploads persist in the `open-webui` Docker volume across restarts
+(`docker compose -f compose.openwebui.yaml down` keeps it; add `-v` only to wipe it). The gateway
+lives in
+[`OpenAiCompatController`](src/main/java/com/tirthoguha/omnillm/controller/OpenAiCompatController.java);
+it reuses `ChatService`, so per-backend routing is preserved.
+
 ### Health / metrics (Spring Boot Actuator)
 
 ```bash

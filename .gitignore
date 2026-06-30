@@ -5,3 +5,5 @@ target/
 .DS_Store
 .vscode/
 .claude/settings.local.json
+.env
+.repoagent/
