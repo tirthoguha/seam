@@ -9,9 +9,9 @@ import java.util.function.Consumer;
  * these provider-agnostic types ({@link ChatPrompt} / {@link ChatResult}) and whatever the
  * underlying SDK or HTTP API expects.
  *
- * <p>Note the interface is transport-agnostic: streaming pushes plain text tokens to a
- * {@link Consumer}, so providers never depend on Spring MVC's SSE types. Adapting tokens to
- * a particular transport (SSE, WebSocket, …) is the caller's job.
+ * <p>Note the interface is transport-agnostic: streaming pushes provider-agnostic
+ * {@link ChatStreamEvent}s to a {@link Consumer}, so providers never depend on Spring MVC's SSE
+ * types. Adapting events to a particular transport (SSE, WebSocket, …) is the caller's job.
  *
  * <p>Add a native (non-OpenAI-compatible) backend by dropping in one more {@code @Component}
  * that implements this interface — nothing else in the app needs to change.
@@ -25,10 +25,26 @@ public interface ChatProvider {
     ChatResult chat(ChatPrompt prompt);
 
     /**
-     * Streaming chat completion. Invokes {@code onToken} once per text token as it arrives and
-     * returns when the stream is exhausted. Exceptions propagate to the caller.
+     * Streaming chat completion. Invokes {@code onEvent} for each {@link ChatStreamEvent} as it
+     * arrives — interleaved {@link ChatStreamEvent.TextDelta} and
+     * {@link ChatStreamEvent.ToolCallDelta} fragments, then exactly one
+     * {@link ChatStreamEvent.Completed} — and returns when the stream is exhausted. Exceptions
+     * propagate to the caller (wrapped as {@link ChatProviderException}).
      */
-    void streamTokens(ChatPrompt prompt, Consumer<String> onToken);
+    void stream(ChatPrompt prompt, Consumer<ChatStreamEvent> onEvent);
+
+    /**
+     * Text-only streaming: pushes each assistant content fragment to {@code onToken}, ignoring
+     * tool-call and completion events. This is the native {@code /chat/stream} path, which only ever
+     * renders text. Implemented on top of {@link #stream} so providers implement one method.
+     */
+    default void streamTokens(ChatPrompt prompt, Consumer<String> onToken) {
+        stream(prompt, event -> {
+            if (event instanceof ChatStreamEvent.TextDelta delta) {
+                onToken.accept(delta.text());
+            }
+        });
+    }
 
     /**
      * The model ids this backend actually offers (its own {@code /v1/models}), used to advertise the

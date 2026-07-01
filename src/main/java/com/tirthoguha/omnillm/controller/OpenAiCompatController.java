@@ -27,7 +27,10 @@ import com.tirthoguha.omnillm.dto.openai.OpenAiEmbeddingsResponse;
 import com.tirthoguha.omnillm.dto.openai.OpenAiModelList;
 import com.tirthoguha.omnillm.provider.ChatPrompt;
 import com.tirthoguha.omnillm.provider.ChatResult;
+import com.tirthoguha.omnillm.provider.ChatStreamEvent;
 import com.tirthoguha.omnillm.provider.EmbeddingResult;
+import com.tirthoguha.omnillm.provider.ToolCall;
+import com.tirthoguha.omnillm.provider.ToolSpec;
 import com.tirthoguha.omnillm.service.ChatService;
 import com.tirthoguha.omnillm.service.EmbeddingService;
 
@@ -110,18 +113,22 @@ public class OpenAiCompatController {
         }
         ParsedModel parsed = parseModel(request.model());
 
+        // Map request tools → provider-agnostic ToolSpec list (shared by both paths).
+        List<ToolSpec> tools = mapTools(request.tools());
+
         if (request.streaming()) {
-            return streamCompletion(messages, parsed);
+            return streamCompletion(messages, parsed, tools);
         }
 
-        ChatResult result = chatService.complete(messages, parsed.backend(), parsed.model());
+        ChatResult result = chatService.complete(messages, parsed.backend(), parsed.model(), tools);
         return OpenAiChatCompletionResponse.of(
-                newId(), Instant.now().getEpochSecond(), result.model(), result.reply());
+                newId(), Instant.now().getEpochSecond(), result.model(), result);
     }
 
     // --- streaming ----------------------------------------------------------
 
-    private SseEmitter streamCompletion(List<ChatPrompt.Message> messages, ParsedModel parsed) {
+    private SseEmitter streamCompletion(List<ChatPrompt.Message> messages, ParsedModel parsed,
+                                        List<ToolSpec> tools) {
         // Resolve + validate synchronously so an unknown backend is a 400 JSON error, not a broken
         // stream after headers are already committed.
         ChatService.Resolved r = chatService.resolve(parsed.backend(), parsed.model());
@@ -131,13 +138,23 @@ public class OpenAiCompatController {
         String model = r.model();
 
         sendChunk(emitter, OpenAiChatCompletionChunk.role(id, created, model));   // opening role frame
-        chatService.runStream(r.backend(), r.model(), messages,
-                token -> sendChunk(emitter, OpenAiChatCompletionChunk.token(id, created, model, token)),
-                () -> {
-                    sendChunk(emitter, OpenAiChatCompletionChunk.stop(id, created, model));
-                    sendDone(emitter);
-                    emitter.complete();
+        chatService.runStreamEvents(r.backend(), r.model(), messages, tools,
+                event -> {
+                    // Fan the provider-agnostic events out onto OpenAI chunk frames.
+                    if (event instanceof ChatStreamEvent.TextDelta text) {
+                        sendChunk(emitter, OpenAiChatCompletionChunk.token(id, created, model, text.text()));
+                    } else if (event instanceof ChatStreamEvent.ToolCallDelta tc) {
+                        sendChunk(emitter, OpenAiChatCompletionChunk.toolCallDelta(id, created, model,
+                                tc.index(), tc.id(), tc.name(), tc.argumentsFragment()));
+                    } else if (event instanceof ChatStreamEvent.Completed done) {
+                        // Final frame carries the finish reason ("stop" or "tool_calls").
+                        String finishReason = done.finishReason() != null ? done.finishReason() : "stop";
+                        sendChunk(emitter, OpenAiChatCompletionChunk.finish(id, created, model, finishReason));
+                        sendDone(emitter);
+                        emitter.complete();
+                    }
                 },
+                () -> { /* completion is emitted by the Completed event above */ },
                 e -> {
                     log.warn("OpenAI-compatible stream failed for model '{}'", model, e);
                     try {
@@ -185,8 +202,31 @@ public class OpenAiCompatController {
             return List.of();
         }
         return request.messages().stream()
-                .map(m -> new ChatPrompt.Message(roleOf(m.role()), textOf(m.content())))
+                .map(this::mapMessage)
                 .toList();
+    }
+
+    private ChatPrompt.Message mapMessage(OpenAiChatCompletionRequest.Message m) {
+        ChatPrompt.Role role = roleOf(m.role());
+
+        // TOOL result turn: bind the tool-call-id so the provider can echo it back.
+        if (role == ChatPrompt.Role.TOOL) {
+            return new ChatPrompt.Message(role, textOf(m.content()), List.of(), m.tool_call_id());
+        }
+
+        // ASSISTANT turn that carried tool calls: bind them onto the message.
+        if (role == ChatPrompt.Role.ASSISTANT
+                && m.tool_calls() != null && !m.tool_calls().isEmpty()) {
+            List<ToolCall> toolCalls = m.tool_calls().stream()
+                    .map(tc -> new ToolCall(
+                            tc.id(),
+                            tc.function() != null ? tc.function().name() : "",
+                            tc.function() != null ? tc.function().arguments() : "{}"))
+                    .toList();
+            return new ChatPrompt.Message(role, textOf(m.content()), toolCalls, null);
+        }
+
+        return new ChatPrompt.Message(role, textOf(m.content()));
     }
 
     private static ChatPrompt.Role roleOf(String role) {
@@ -196,6 +236,7 @@ public class OpenAiCompatController {
         return switch (role.toLowerCase(Locale.ROOT)) {
             case "system", "developer" -> ChatPrompt.Role.SYSTEM;
             case "assistant" -> ChatPrompt.Role.ASSISTANT;
+            case "tool" -> ChatPrompt.Role.TOOL;
             default -> ChatPrompt.Role.USER;
         };
     }
@@ -218,6 +259,20 @@ public class OpenAiCompatController {
             return sb.toString();
         }
         return content.toString();
+    }
+
+    /** Map the request's {@code tools} list onto provider-agnostic {@link ToolSpec}s. */
+    private static List<ToolSpec> mapTools(List<OpenAiChatCompletionRequest.Tool> tools) {
+        if (tools == null || tools.isEmpty()) {
+            return List.of();
+        }
+        return tools.stream()
+                .filter(t -> t.function() != null)
+                .map(t -> new ToolSpec(
+                        t.function().name(),
+                        t.function().description(),
+                        t.function().parameters()))
+                .toList();
     }
 
     /** Normalise the embeddings {@code input} (a string or array of strings) to a list of texts. */

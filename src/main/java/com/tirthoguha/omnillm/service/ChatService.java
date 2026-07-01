@@ -21,6 +21,8 @@ import com.tirthoguha.omnillm.provider.ChatProvider;
 import com.tirthoguha.omnillm.provider.ChatProviderRegistry;
 import com.tirthoguha.omnillm.provider.ChatPrompt;
 import com.tirthoguha.omnillm.provider.ChatResult;
+import com.tirthoguha.omnillm.provider.ChatStreamEvent;
+import com.tirthoguha.omnillm.provider.ToolSpec;
 
 /**
  * Orchestrates chat requests: resolves the effective backend (request override, else the configured
@@ -85,8 +87,18 @@ public class ChatService {
 
     /** Blocking completion for a full conversation; backend/model fall back to defaults when blank. */
     public ChatResult complete(List<ChatPrompt.Message> messages, String requestedBackend, String requestedModel) {
+        return complete(messages, requestedBackend, requestedModel, List.of());
+    }
+
+    /**
+     * Blocking completion for a full conversation with function tools. The tools are threaded
+     * into the {@link ChatPrompt} so the provider can forward them to the model; backend/model fall
+     * back to defaults when blank.
+     */
+    public ChatResult complete(List<ChatPrompt.Message> messages, String requestedBackend,
+                               String requestedModel, List<ToolSpec> tools) {
         Resolved r = resolve(requestedBackend, requestedModel);
-        return registry.get(r.backend()).chat(new ChatPrompt(messages, r.model()));
+        return registry.get(r.backend()).chat(new ChatPrompt(messages, r.model(), tools));
     }
 
     /**
@@ -101,6 +113,29 @@ public class ChatService {
         streamExecutor.execute(() -> {
             try {
                 provider.streamTokens(prompt, onToken);
+                onComplete.run();
+            } catch (Exception e) {
+                onError.accept(e);
+            }
+        });
+    }
+
+    /**
+     * Run an <em>event</em>-level streaming completion on the shared executor — the fine-grained
+     * analogue of {@link #runStream}. The backend/model are assumed already resolved (see
+     * {@link #resolve}); the {@code tools} are threaded into the {@link ChatPrompt} so the provider
+     * can forward them. Each {@link ChatStreamEvent} (text deltas, tool-call deltas, and the terminal
+     * Completed) is pushed to {@code onEvent}; then {@code onComplete} runs on success or
+     * {@code onError} on failure. Callers format the transport (SSE, …) themselves.
+     */
+    public void runStreamEvents(String backend, String model, List<ChatPrompt.Message> messages,
+                                List<ToolSpec> tools, Consumer<ChatStreamEvent> onEvent,
+                                Runnable onComplete, Consumer<Throwable> onError) {
+        ChatProvider provider = registry.get(backend);
+        ChatPrompt prompt = new ChatPrompt(messages, model, tools);
+        streamExecutor.execute(() -> {
+            try {
+                provider.stream(prompt, onEvent);
                 onComplete.run();
             } catch (Exception e) {
                 onError.accept(e);

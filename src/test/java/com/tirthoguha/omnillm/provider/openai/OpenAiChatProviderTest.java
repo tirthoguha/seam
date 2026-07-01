@@ -23,11 +23,14 @@ import com.openai.models.chat.completions.ChatCompletion;
 import com.openai.models.chat.completions.ChatCompletionChunk;
 import com.openai.models.chat.completions.ChatCompletionCreateParams;
 import com.openai.models.chat.completions.ChatCompletionMessage;
+import com.openai.models.chat.completions.ChatCompletionMessageFunctionToolCall;
 import com.openai.services.blocking.ChatService;
 import com.openai.services.blocking.chat.ChatCompletionService;
 import com.tirthoguha.omnillm.provider.ChatPrompt;
 import com.tirthoguha.omnillm.provider.ChatProviderException;
 import com.tirthoguha.omnillm.provider.ChatResult;
+import com.tirthoguha.omnillm.provider.ChatStreamEvent;
+import com.tirthoguha.omnillm.provider.ToolSpec;
 
 /**
  * Unit tests for {@link OpenAiChatProvider} with the official OpenAI SDK fully mocked — no network,
@@ -111,6 +114,43 @@ class OpenAiChatProviderTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void stream_surfacesToolCallFragmentsAsToolCallDeltaEvents_andCompleted() {
+        // A tool call streams as: an opening fragment (index+id+name), then argument fragments,
+        // then a chunk with finish_reason=tool_calls. The provider must map these to ToolCallDelta
+        // events (id/name only on the first) and a terminal Completed("tool_calls").
+        StreamResponse<ChatCompletionChunk> streamResponse = mock(StreamResponse.class);
+        when(streamResponse.stream()).thenReturn(Stream.of(
+                chunkWithToolCall(0, "call-1", "get_weather", "{\"ci"),
+                chunkWithToolCall(0, null, null, "ty\":\"Sydney\"}"),
+                chunkWithFinish("tool_calls")));
+        when(completions.createStreaming(any(ChatCompletionCreateParams.class))).thenReturn(streamResponse);
+
+        List<ChatStreamEvent> events = new java.util.ArrayList<>();
+        provider.stream(new ChatPrompt("What's the weather?", "ai/gemma3"), events::add);
+
+        // Two tool-call fragments + one Completed.
+        List<ChatStreamEvent.ToolCallDelta> toolDeltas = events.stream()
+                .filter(e -> e instanceof ChatStreamEvent.ToolCallDelta)
+                .map(e -> (ChatStreamEvent.ToolCallDelta) e)
+                .toList();
+        assertThat(toolDeltas).hasSize(2);
+        assertThat(toolDeltas.get(0).index()).isEqualTo(0);
+        assertThat(toolDeltas.get(0).id()).isEqualTo("call-1");
+        assertThat(toolDeltas.get(0).name()).isEqualTo("get_weather");
+        assertThat(toolDeltas.get(0).argumentsFragment()).isEqualTo("{\"ci");
+        // Continuation fragment: id/name null, only the arguments fragment.
+        assertThat(toolDeltas.get(1).id()).isNull();
+        assertThat(toolDeltas.get(1).name()).isNull();
+        assertThat(toolDeltas.get(1).argumentsFragment()).isEqualTo("ty\":\"Sydney\"}");
+
+        ChatStreamEvent last = events.get(events.size() - 1);
+        assertThat(last).isInstanceOf(ChatStreamEvent.Completed.class);
+        assertThat(((ChatStreamEvent.Completed) last).finishReason()).isEqualTo("tool_calls");
+        verify(streamResponse).close();
+    }
+
+    @Test
     void chat_wrapsSdkErrorAsChatProviderException() {
         when(completions.create(any(ChatCompletionCreateParams.class)))
                 .thenThrow(new OpenAIInvalidDataException("backend unavailable"));
@@ -129,6 +169,52 @@ class OpenAiChatProviderTest {
         assertThatThrownBy(() -> provider.streamTokens(new ChatPrompt("hi", "ai/gemma3"), t -> { }))
                 .isInstanceOf(ChatProviderException.class)
                 .hasMessageContaining("OpenAI streaming completion failed");
+    }
+
+    @Test
+    void chat_withTools_includesToolsInSdkParams() {
+        when(completions.create(any(ChatCompletionCreateParams.class)))
+                .thenReturn(completionReturning("sure"));
+
+        List<ToolSpec> tools = List.of(
+                new ToolSpec("get_weather", "Get weather for a city",
+                        java.util.Map.of("type", "object",
+                                "properties", java.util.Map.of(
+                                        "city", java.util.Map.of("type", "string")))));
+        ChatPrompt prompt = new ChatPrompt(
+                List.of(new ChatPrompt.Message(ChatPrompt.Role.USER, "What's the weather?")),
+                "ai/gemma3", tools);
+
+        provider.chat(prompt);
+
+        ArgumentCaptor<ChatCompletionCreateParams> captor =
+                ArgumentCaptor.forClass(ChatCompletionCreateParams.class);
+        verify(completions).create(captor.capture());
+
+        // The SDK params must carry exactly the one tool we passed in.
+        ChatCompletionCreateParams sent = captor.getValue();
+        assertThat(sent.tools()).isPresent();
+        assertThat(sent.tools().get()).hasSize(1);
+        assertThat(sent.tools().get().get(0).isFunction()).isTrue();
+        assertThat(sent.tools().get().get(0).asFunction().function().name())
+                .isEqualTo("get_weather");
+    }
+
+    @Test
+    void chat_withToolCallResponse_extractsToolCallsAndFinishReason() {
+        when(completions.create(any(ChatCompletionCreateParams.class)))
+                .thenReturn(completionWithToolCall("call-1", "get_weather", "{\"city\":\"Sydney\"}"));
+
+        ChatResult result = provider.chat(new ChatPrompt(
+                "What's the weather?", "ai/gemma3"));
+
+        assertThat(result.finishReason()).isEqualTo("tool_calls");
+        assertThat(result.toolCalls()).hasSize(1);
+        assertThat(result.toolCalls().get(0).id()).isEqualTo("call-1");
+        assertThat(result.toolCalls().get(0).name()).isEqualTo("get_weather");
+        assertThat(result.toolCalls().get(0).argumentsJson()).isEqualTo("{\"city\":\"Sydney\"}");
+        // No text content when model only made tool calls.
+        assertThat(result.reply()).isEmpty();
     }
 
     // --- helpers that build the SDK response objects a real backend would return ---
@@ -155,6 +241,39 @@ class OpenAiChatProviderTest {
                 .build();
     }
 
+    /** Build a completion whose first choice has a function tool call and finish_reason=TOOL_CALLS. */
+    private static ChatCompletion completionWithToolCall(String callId, String fnName, String args) {
+        ChatCompletionMessageFunctionToolCall fnToolCall =
+                ChatCompletionMessageFunctionToolCall.builder()
+                        .id(callId)
+                        .function(ChatCompletionMessageFunctionToolCall.Function.builder()
+                                .name(fnName)
+                                .arguments(args)
+                                .build())
+                        .build();
+
+        ChatCompletionMessage message = ChatCompletionMessage.builder()
+                .role(JsonValue.from("assistant"))
+                .content(Optional.empty())   // no text content when only tool calls
+                .refusal(Optional.empty())
+                .addToolCall(fnToolCall)
+                .build();
+
+        ChatCompletion.Choice choice = ChatCompletion.Choice.builder()
+                .index(0L)
+                .message(message)
+                .finishReason(ChatCompletion.Choice.FinishReason.TOOL_CALLS)
+                .logprobs(Optional.empty())
+                .build();
+
+        return ChatCompletion.builder()
+                .id("cmpl-tool")
+                .created(0L)
+                .model("ai/gemma3")
+                .choices(List.of(choice))
+                .build();
+    }
+
     private static ChatCompletionChunk chunkWithContent(String content) {
         ChatCompletionChunk.Choice.Delta.Builder delta = ChatCompletionChunk.Choice.Delta.builder();
         if (content != null) {
@@ -165,6 +284,59 @@ class OpenAiChatProviderTest {
                 .index(0L)
                 .delta(delta.build())
                 .finishReason(Optional.empty())
+                .build();
+
+        return ChatCompletionChunk.builder()
+                .id("chunk-1")
+                .created(0L)
+                .model("ai/gemma3")
+                .choices(List.of(choice))
+                .build();
+    }
+
+    /**
+     * A chunk carrying one streamed tool-call fragment. On the first fragment for an index, id/name
+     * are set (announcing the call); continuation fragments pass them null and only carry arguments.
+     */
+    private static ChatCompletionChunk chunkWithToolCall(int index, String id, String name, String argsFragment) {
+        ChatCompletionChunk.Choice.Delta.ToolCall.Function.Builder fn =
+                ChatCompletionChunk.Choice.Delta.ToolCall.Function.builder()
+                        .arguments(argsFragment);
+        if (name != null) {
+            fn.name(name);
+        }
+        ChatCompletionChunk.Choice.Delta.ToolCall.Builder toolCall =
+                ChatCompletionChunk.Choice.Delta.ToolCall.builder()
+                        .index((long) index)
+                        .function(fn.build());
+        if (id != null) {
+            toolCall.id(id);
+        }
+
+        ChatCompletionChunk.Choice.Delta delta = ChatCompletionChunk.Choice.Delta.builder()
+                .addToolCall(toolCall.build())
+                .build();
+
+        ChatCompletionChunk.Choice choice = ChatCompletionChunk.Choice.builder()
+                .index(0L)
+                .delta(delta)
+                .finishReason(Optional.empty())
+                .build();
+
+        return ChatCompletionChunk.builder()
+                .id("chunk-1")
+                .created(0L)
+                .model("ai/gemma3")
+                .choices(List.of(choice))
+                .build();
+    }
+
+    /** A terminal chunk: empty delta with a finish reason. */
+    private static ChatCompletionChunk chunkWithFinish(String finishReason) {
+        ChatCompletionChunk.Choice choice = ChatCompletionChunk.Choice.builder()
+                .index(0L)
+                .delta(ChatCompletionChunk.Choice.Delta.builder().build())
+                .finishReason(ChatCompletionChunk.Choice.FinishReason.of(finishReason))
                 .build();
 
         return ChatCompletionChunk.builder()

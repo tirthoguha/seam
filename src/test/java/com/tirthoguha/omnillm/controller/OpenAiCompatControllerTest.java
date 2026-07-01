@@ -1,10 +1,13 @@
 package com.tirthoguha.omnillm.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -13,6 +16,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,10 +24,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import com.tirthoguha.omnillm.config.LlmProperties;
 import com.tirthoguha.omnillm.provider.ChatResult;
+import com.tirthoguha.omnillm.provider.ChatStreamEvent;
 import com.tirthoguha.omnillm.provider.EmbeddingResult;
+import com.tirthoguha.omnillm.provider.ToolCall;
+import com.tirthoguha.omnillm.provider.Usage;
 import com.tirthoguha.omnillm.service.ChatService;
 import com.tirthoguha.omnillm.service.EmbeddingService;
 
@@ -91,8 +99,8 @@ class OpenAiCompatControllerTest {
 
     @Test
     void completions_blocking_returnsOpenAiChatCompletionShape() throws Exception {
-        when(chatService.complete(any(), any(), any()))
-                .thenReturn(new ChatResult("docker", "ai/gemma3", "hello!"));
+        when(chatService.complete(any(), any(), any(), any()))
+                .thenReturn(ChatResult.text("docker", "ai/gemma3", "hello!"));
 
         mockMvc.perform(post("/v1/chat/completions").contentType(APPLICATION_JSON).content("""
                         {"model":"docker:ai/gemma3","messages":[{"role":"user","content":"hi"}]}"""))
@@ -106,20 +114,20 @@ class OpenAiCompatControllerTest {
 
     @Test
     void completions_parsesModelIntoBackendAndModel() throws Exception {
-        when(chatService.complete(any(), any(), any()))
-                .thenReturn(new ChatResult("openai", "gpt-4o", "ok"));
+        when(chatService.complete(any(), any(), any(), any()))
+                .thenReturn(ChatResult.text("openai", "gpt-4o", "ok"));
 
         mockMvc.perform(post("/v1/chat/completions").contentType(APPLICATION_JSON).content("""
                         {"model":"openai:gpt-4o","messages":[{"role":"user","content":"hi"}]}"""))
                 .andExpect(status().isOk());
 
-        verify(chatService).complete(any(), eq("openai"), eq("gpt-4o"));
+        verify(chatService).complete(any(), eq("openai"), eq("gpt-4o"), any());
     }
 
     @Test
     void completions_flattensSystemAndArrayContent() throws Exception {
-        when(chatService.complete(any(), any(), any()))
-                .thenReturn(new ChatResult("docker", "ai/gemma3", "ok"));
+        when(chatService.complete(any(), any(), any(), any()))
+                .thenReturn(ChatResult.text("docker", "ai/gemma3", "ok"));
 
         // system message + a user message whose content is an array of parts (multimodal-style text)
         mockMvc.perform(post("/v1/chat/completions").contentType(APPLICATION_JSON).content("""
@@ -135,6 +143,82 @@ class OpenAiCompatControllerTest {
         mockMvc.perform(post("/v1/chat/completions").contentType(APPLICATION_JSON).content("""
                         {"model":"docker","messages":[]}"""))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void completions_toolCallResponse_serializesToolCallsFinishReasonAndUsage() throws Exception {
+        // The provider returned a tool-call result: finish_reason="tool_calls", no text content,
+        // one function call, and usage data. The gateway must wire all of this to the response.
+        ChatResult toolCallResult = new ChatResult(
+                "openai", "gpt-4o-mini", "",
+                List.of(new ToolCall("call-abc123", "get_weather", "{\"city\":\"Sydney\"}")),
+                "tool_calls",
+                new Usage(10L, 5L, 15L));
+        when(chatService.complete(any(), any(), any(), any())).thenReturn(toolCallResult);
+
+        mockMvc.perform(post("/v1/chat/completions").contentType(APPLICATION_JSON).content("""
+                        {"model":"openai:gpt-4o-mini",
+                         "messages":[{"role":"user","content":"What is the weather?"}],
+                         "tools":[{"type":"function","function":{
+                           "name":"get_weather",
+                           "description":"Get weather",
+                           "parameters":{"type":"object","properties":{"city":{"type":"string"}}}
+                         }}]}"""))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.choices[0].finish_reason").value("tool_calls"))
+                .andExpect(jsonPath("$.choices[0].message.tool_calls[0].id").value("call-abc123"))
+                .andExpect(jsonPath("$.choices[0].message.tool_calls[0].type").value("function"))
+                .andExpect(jsonPath("$.choices[0].message.tool_calls[0].function.name").value("get_weather"))
+                .andExpect(jsonPath("$.choices[0].message.tool_calls[0].function.arguments")
+                        .value("{\"city\":\"Sydney\"}"))
+                .andExpect(jsonPath("$.usage.prompt_tokens").value(10))
+                .andExpect(jsonPath("$.usage.completion_tokens").value(5))
+                .andExpect(jsonPath("$.usage.total_tokens").value(15));
+    }
+
+    @Test
+    void completions_streaming_emitsToolCallDeltaChunksAndToolCallsFinishReason() throws Exception {
+        // resolve() is called synchronously before the stream starts.
+        when(chatService.resolve(any(), any()))
+                .thenReturn(new ChatService.Resolved("openai", "gpt-4o-mini"));
+
+        // Drive the event consumer as a provider would for a streamed tool call: an opening
+        // fragment (index+id+name), an argument continuation fragment, then Completed("tool_calls").
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            Consumer<ChatStreamEvent> onEvent = invocation.getArgument(4);
+            Runnable onComplete = invocation.getArgument(5);
+            onEvent.accept(new ChatStreamEvent.ToolCallDelta(0, "call-1", "get_weather", "{\"ci"));
+            onEvent.accept(new ChatStreamEvent.ToolCallDelta(0, null, null, "ty\":\"Sydney\"}"));
+            onEvent.accept(new ChatStreamEvent.Completed("tool_calls", new Usage(10L, 5L, 15L)));
+            onComplete.run();
+            return null;
+        }).when(chatService).runStreamEvents(any(), any(), any(), any(), any(), any(), any());
+
+        MvcResult mvcResult = mockMvc.perform(post("/v1/chat/completions").contentType(APPLICATION_JSON).content("""
+                        {"model":"openai:gpt-4o-mini","stream":true,
+                         "messages":[{"role":"user","content":"What is the weather?"}],
+                         "tools":[{"type":"function","function":{
+                           "name":"get_weather",
+                           "parameters":{"type":"object","properties":{"city":{"type":"string"}}}
+                         }}]}"""))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String body = mockMvc.perform(asyncDispatch(mvcResult))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        // Opening role frame, the tool-call delta chunks (id+name on the first, arguments on both),
+        // a finish_reason:"tool_calls" final chunk, and the [DONE] sentinel.
+        assertThat(body).contains("\"role\":\"assistant\"");
+        assertThat(body).contains("\"tool_calls\"");
+        assertThat(body).contains("\"id\":\"call-1\"");
+        assertThat(body).contains("\"name\":\"get_weather\"");
+        assertThat(body).contains("\"type\":\"function\"");
+        assertThat(body).contains("Sydney");
+        assertThat(body).contains("\"finish_reason\":\"tool_calls\"");
+        assertThat(body).contains("[DONE]");
     }
 
     // --- embeddings ---------------------------------------------------------

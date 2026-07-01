@@ -31,7 +31,7 @@ class ChatControllerTest {
     @Test
     void returnsReplyForValidRequest() throws Exception {
         when(chatService.chat(eq("hi"), any(), any()))
-                .thenReturn(new ChatResult("openai", "gpt-4o-mini", "hello!"));
+                .thenReturn(ChatResult.text("openai", "gpt-4o-mini", "hello!"));
 
         mockMvc.perform(post("/chat").contentType(APPLICATION_JSON).content("{\"message\":\"hi\"}"))
                 .andExpect(status().isOk())

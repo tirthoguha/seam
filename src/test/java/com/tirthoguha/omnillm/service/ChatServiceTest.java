@@ -21,11 +21,14 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.List;
+
 import com.tirthoguha.omnillm.config.LlmProperties;
 import com.tirthoguha.omnillm.provider.ChatProvider;
 import com.tirthoguha.omnillm.provider.ChatProviderRegistry;
 import com.tirthoguha.omnillm.provider.ChatPrompt;
 import com.tirthoguha.omnillm.provider.ChatResult;
+import com.tirthoguha.omnillm.provider.ToolSpec;
 
 /**
  * Unit tests for {@link ChatService}. Providers are mocked behind a {@link ChatProviderRegistry},
@@ -58,7 +61,7 @@ class ChatServiceTest {
     @Test
     void chat_usesDefaultBackendAndItsModel_whenNeitherRequested() {
         when(docker.chat(any(ChatPrompt.class)))
-                .thenReturn(new ChatResult("docker", "ai/gemma3", "hi"));
+                .thenReturn(ChatResult.text("docker", "ai/gemma3", "hi"));
 
         service.chat("hello", null, null);
 
@@ -75,7 +78,7 @@ class ChatServiceTest {
     @Test
     void chat_routesToRequestedBackend_andUsesThatBackendsDefaultModel() {
         when(openai.chat(any(ChatPrompt.class)))
-                .thenReturn(new ChatResult("openai", "gpt-4o-mini", "hi"));
+                .thenReturn(ChatResult.text("openai", "gpt-4o-mini", "hi"));
 
         service.chat("hello", null, "openai");
 
@@ -87,13 +90,32 @@ class ChatServiceTest {
     @Test
     void chat_usesRequestedModel_whenProvided() {
         when(openai.chat(any(ChatPrompt.class)))
-                .thenReturn(new ChatResult("openai", "gpt-4o", "hi"));
+                .thenReturn(ChatResult.text("openai", "gpt-4o", "hi"));
 
         service.chat("hello", "gpt-4o", "openai");
 
         ArgumentCaptor<ChatPrompt> captor = ArgumentCaptor.forClass(ChatPrompt.class);
         verify(openai).chat(captor.capture());
         assertThat(captor.getValue().model()).isEqualTo("gpt-4o");   // explicit override wins
+    }
+
+    @Test
+    void complete_withTools_threadsToolsIntoPrompt() {
+        when(docker.chat(any(ChatPrompt.class)))
+                .thenReturn(ChatResult.text("docker", "ai/gemma3", "calling tool"));
+
+        List<ToolSpec> tools = List.of(
+                new ToolSpec("lookup", "Look something up", Map.of("type", "object")));
+        service.complete(
+                List.of(new ChatPrompt.Message(ChatPrompt.Role.USER, "hello")),
+                null, null, tools);
+
+        ArgumentCaptor<ChatPrompt> captor = ArgumentCaptor.forClass(ChatPrompt.class);
+        verify(docker).chat(captor.capture());
+
+        // The prompt delivered to the provider must carry the tool spec.
+        assertThat(captor.getValue().tools()).hasSize(1);
+        assertThat(captor.getValue().tools().get(0).name()).isEqualTo("lookup");
     }
 
     @Test

@@ -120,6 +120,8 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 }'                                          # add "stream":true for SSE chat.completion.chunk + [DONE]
 ```
 
+The gateway supports **OpenAI-style function/tool calling**: pass a `tools` array in your request and the model returns `tool_calls` with `finish_reason:"tool_calls"` — in both the blocking and streaming response. This works with both the Chat Completions and Responses API backends, so Open WebUI's native tool mode and other OpenAI-tool-aware clients work against either backend.
+
 **Run [Open WebUI](https://github.com/open-webui/open-webui) on top** — one command, two containers
 (the app + Open WebUI, wired together), see [`compose.openwebui.yaml`](compose.openwebui.yaml):
 
