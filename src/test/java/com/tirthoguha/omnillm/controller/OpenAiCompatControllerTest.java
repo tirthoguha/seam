@@ -20,6 +20,7 @@ import java.util.function.Consumer;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -30,7 +31,9 @@ import com.tirthoguha.omnillm.config.LlmProperties;
 import com.tirthoguha.omnillm.provider.ChatResult;
 import com.tirthoguha.omnillm.provider.ChatStreamEvent;
 import com.tirthoguha.omnillm.provider.EmbeddingResult;
+import com.tirthoguha.omnillm.provider.SamplingParams;
 import com.tirthoguha.omnillm.provider.ToolCall;
+import com.tirthoguha.omnillm.provider.ToolChoice;
 import com.tirthoguha.omnillm.provider.Usage;
 import com.tirthoguha.omnillm.service.ChatService;
 import com.tirthoguha.omnillm.service.EmbeddingService;
@@ -99,7 +102,7 @@ class OpenAiCompatControllerTest {
 
     @Test
     void completions_blocking_returnsOpenAiChatCompletionShape() throws Exception {
-        when(chatService.complete(any(), any(), any(), any()))
+        when(chatService.complete(any(), any(), any(), any(), any(), any()))
                 .thenReturn(ChatResult.text("docker", "ai/gemma3", "hello!"));
 
         mockMvc.perform(post("/v1/chat/completions").contentType(APPLICATION_JSON).content("""
@@ -114,19 +117,19 @@ class OpenAiCompatControllerTest {
 
     @Test
     void completions_parsesModelIntoBackendAndModel() throws Exception {
-        when(chatService.complete(any(), any(), any(), any()))
+        when(chatService.complete(any(), any(), any(), any(), any(), any()))
                 .thenReturn(ChatResult.text("openai", "gpt-4o", "ok"));
 
         mockMvc.perform(post("/v1/chat/completions").contentType(APPLICATION_JSON).content("""
                         {"model":"openai:gpt-4o","messages":[{"role":"user","content":"hi"}]}"""))
                 .andExpect(status().isOk());
 
-        verify(chatService).complete(any(), eq("openai"), eq("gpt-4o"), any());
+        verify(chatService).complete(any(), eq("openai"), eq("gpt-4o"), any(), any(), any());
     }
 
     @Test
     void completions_flattensSystemAndArrayContent() throws Exception {
-        when(chatService.complete(any(), any(), any(), any()))
+        when(chatService.complete(any(), any(), any(), any(), any(), any()))
                 .thenReturn(ChatResult.text("docker", "ai/gemma3", "ok"));
 
         // system message + a user message whose content is an array of parts (multimodal-style text)
@@ -136,6 +139,33 @@ class OpenAiCompatControllerTest {
                           {"role":"user","content":[{"type":"text","text":"hi there"}]}
                         ]}"""))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void completions_carriesImageUrlPartsThroughToTheProvider() throws Exception {
+        when(chatService.complete(any(), any(), any(), any(), any(), any()))
+                .thenReturn(ChatResult.text("openai", "gpt-4o-mini", "a cat"));
+
+        mockMvc.perform(post("/v1/chat/completions").contentType(APPLICATION_JSON).content("""
+                        {"model":"openai:gpt-4o-mini","messages":[
+                          {"role":"user","content":[
+                            {"type":"text","text":"what is this?"},
+                            {"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}
+                          ]}
+                        ]}"""))
+                .andExpect(status().isOk());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<com.tirthoguha.omnillm.provider.ChatPrompt.Message>> msgs =
+                ArgumentCaptor.forClass(List.class);
+        verify(chatService).complete(msgs.capture(), any(), any(), any(), any(), any());
+
+        var userMsg = msgs.getValue().get(0);
+        assertThat(userMsg.hasImageParts()).isTrue();
+        assertThat(userMsg.parts()).hasSize(2);
+        assertThat(userMsg.parts().get(1).imageUrl()).isEqualTo("data:image/png;base64,AAAA");
+        // flattened text is still populated as a fallback
+        assertThat(userMsg.content()).isEqualTo("what is this?");
     }
 
     @Test
@@ -154,7 +184,7 @@ class OpenAiCompatControllerTest {
                 List.of(new ToolCall("call-abc123", "get_weather", "{\"city\":\"Sydney\"}")),
                 "tool_calls",
                 new Usage(10L, 5L, 15L));
-        when(chatService.complete(any(), any(), any(), any())).thenReturn(toolCallResult);
+        when(chatService.complete(any(), any(), any(), any(), any(), any())).thenReturn(toolCallResult);
 
         mockMvc.perform(post("/v1/chat/completions").contentType(APPLICATION_JSON).content("""
                         {"model":"openai:gpt-4o-mini",
@@ -177,6 +207,52 @@ class OpenAiCompatControllerTest {
     }
 
     @Test
+    void completions_forwardsForcedToolChoiceAndSamplingParams() throws Exception {
+        when(chatService.complete(any(), any(), any(), any(), any(), any()))
+                .thenReturn(ChatResult.text("openai", "gpt-4o-mini", "ok"));
+
+        mockMvc.perform(post("/v1/chat/completions").contentType(APPLICATION_JSON).content("""
+                        {"model":"openai:gpt-4o-mini",
+                         "messages":[{"role":"user","content":"weather?"}],
+                         "tools":[{"type":"function","function":{"name":"get_weather"}}],
+                         "tool_choice":{"type":"function","function":{"name":"get_weather"}},
+                         "temperature":0.3,"top_p":0.8,"max_tokens":256,"seed":7,"stop":["END"]}"""))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<ToolChoice> tc = ArgumentCaptor.forClass(ToolChoice.class);
+        ArgumentCaptor<SamplingParams> sp = ArgumentCaptor.forClass(SamplingParams.class);
+        verify(chatService).complete(any(), any(), any(), any(), tc.capture(), sp.capture());
+
+        assertThat(tc.getValue().mode()).isEqualTo(ToolChoice.Mode.FUNCTION);
+        assertThat(tc.getValue().functionName()).isEqualTo("get_weather");
+        assertThat(sp.getValue().temperature()).isEqualTo(0.3);
+        assertThat(sp.getValue().topP()).isEqualTo(0.8);
+        assertThat(sp.getValue().maxTokens()).isEqualTo(256);
+        assertThat(sp.getValue().seed()).isEqualTo(7L);
+        assertThat(sp.getValue().stop()).containsExactly("END");
+    }
+
+    @Test
+    void completions_parsesStringToolChoiceAndPrefersMaxCompletionTokens() throws Exception {
+        when(chatService.complete(any(), any(), any(), any(), any(), any()))
+                .thenReturn(ChatResult.text("openai", "gpt-4o-mini", "ok"));
+
+        // tool_choice as a bare string; both max_tokens and max_completion_tokens present.
+        mockMvc.perform(post("/v1/chat/completions").contentType(APPLICATION_JSON).content("""
+                        {"model":"openai:gpt-4o-mini",
+                         "messages":[{"role":"user","content":"hi"}],
+                         "tool_choice":"none","max_tokens":100,"max_completion_tokens":50}"""))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<ToolChoice> tc = ArgumentCaptor.forClass(ToolChoice.class);
+        ArgumentCaptor<SamplingParams> sp = ArgumentCaptor.forClass(SamplingParams.class);
+        verify(chatService).complete(any(), any(), any(), any(), tc.capture(), sp.capture());
+
+        assertThat(tc.getValue().mode()).isEqualTo(ToolChoice.Mode.NONE);
+        assertThat(sp.getValue().maxTokens()).isEqualTo(50);   // max_completion_tokens wins
+    }
+
+    @Test
     void completions_streaming_emitsToolCallDeltaChunksAndToolCallsFinishReason() throws Exception {
         // resolve() is called synchronously before the stream starts.
         when(chatService.resolve(any(), any()))
@@ -186,14 +262,14 @@ class OpenAiCompatControllerTest {
         // fragment (index+id+name), an argument continuation fragment, then Completed("tool_calls").
         doAnswer(invocation -> {
             @SuppressWarnings("unchecked")
-            Consumer<ChatStreamEvent> onEvent = invocation.getArgument(4);
-            Runnable onComplete = invocation.getArgument(5);
+            Consumer<ChatStreamEvent> onEvent = invocation.getArgument(6);
+            Runnable onComplete = invocation.getArgument(7);
             onEvent.accept(new ChatStreamEvent.ToolCallDelta(0, "call-1", "get_weather", "{\"ci"));
             onEvent.accept(new ChatStreamEvent.ToolCallDelta(0, null, null, "ty\":\"Sydney\"}"));
             onEvent.accept(new ChatStreamEvent.Completed("tool_calls", new Usage(10L, 5L, 15L)));
             onComplete.run();
             return null;
-        }).when(chatService).runStreamEvents(any(), any(), any(), any(), any(), any(), any());
+        }).when(chatService).runStreamEvents(any(), any(), any(), any(), any(), any(), any(), any(), any());
 
         MvcResult mvcResult = mockMvc.perform(post("/v1/chat/completions").contentType(APPLICATION_JSON).content("""
                         {"model":"openai:gpt-4o-mini","stream":true,

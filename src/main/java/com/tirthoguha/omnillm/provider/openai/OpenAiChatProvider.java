@@ -12,19 +12,26 @@ import com.openai.models.FunctionParameters;
 import com.openai.models.chat.completions.ChatCompletion;
 import com.openai.models.chat.completions.ChatCompletionAssistantMessageParam;
 import com.openai.models.chat.completions.ChatCompletionChunk;
+import com.openai.models.chat.completions.ChatCompletionContentPart;
+import com.openai.models.chat.completions.ChatCompletionContentPartImage;
+import com.openai.models.chat.completions.ChatCompletionContentPartText;
 import com.openai.models.chat.completions.ChatCompletionCreateParams;
 import com.openai.models.chat.completions.ChatCompletionFunctionTool;
 import com.openai.models.chat.completions.ChatCompletionMessageFunctionToolCall;
 import com.openai.models.chat.completions.ChatCompletionMessageToolCall;
+import com.openai.models.chat.completions.ChatCompletionNamedToolChoice;
 import com.openai.models.chat.completions.ChatCompletionStreamOptions;
 import com.openai.models.chat.completions.ChatCompletionTool;
+import com.openai.models.chat.completions.ChatCompletionToolChoiceOption;
 import com.openai.models.chat.completions.ChatCompletionToolMessageParam;
 import com.tirthoguha.omnillm.provider.ChatProvider;
 import com.tirthoguha.omnillm.provider.ChatProviderException;
 import com.tirthoguha.omnillm.provider.ChatPrompt;
 import com.tirthoguha.omnillm.provider.ChatResult;
 import com.tirthoguha.omnillm.provider.ChatStreamEvent;
+import com.tirthoguha.omnillm.provider.SamplingParams;
 import com.tirthoguha.omnillm.provider.ToolCall;
+import com.tirthoguha.omnillm.provider.ToolChoice;
 import com.tirthoguha.omnillm.provider.ToolSpec;
 import com.tirthoguha.omnillm.provider.Usage;
 
@@ -158,7 +165,14 @@ public class OpenAiChatProvider implements ChatProvider {
         for (ChatPrompt.Message message : prompt.messages()) {
             switch (message.role()) {
                 case SYSTEM -> builder.addSystemMessage(message.content());
-                case USER -> builder.addUserMessage(message.content());
+                case USER -> {
+                    if (message.hasImageParts()) {
+                        // Multimodal turn: forward ordered text + image parts as a content array.
+                        builder.addUserMessageOfArrayOfContentParts(toContentParts(message.parts()));
+                    } else {
+                        builder.addUserMessage(message.content());
+                    }
+                }
                 case ASSISTANT -> {
                     if (!message.toolCalls().isEmpty()) {
                         // Assistant turn that requested function calls: replay the tool calls so
@@ -193,15 +207,79 @@ public class OpenAiChatProvider implements ChatProvider {
             }
         }
 
-        // Attach tool definitions when the prompt carries any.
+        // Attach tool definitions when the prompt carries any. tool_choice only makes sense
+        // alongside tools, so it is forwarded only in that case.
         if (!prompt.tools().isEmpty()) {
             List<ChatCompletionTool> sdkTools = prompt.tools().stream()
                     .map(OpenAiChatProvider::toSdkTool)
                     .collect(Collectors.toList());
             builder.tools(sdkTools);
+            applyToolChoice(builder, prompt.toolChoice());
         }
 
+        applySampling(builder, prompt.sampling());
+
         return builder.build();
+    }
+
+    /** Forward a {@link ToolChoice} onto the Chat Completions request; no-op when unset. */
+    private static void applyToolChoice(ChatCompletionCreateParams.Builder builder, ToolChoice tc) {
+        if (tc == null) {
+            return;
+        }
+        switch (tc.mode()) {
+            case AUTO -> builder.toolChoice(ChatCompletionToolChoiceOption.Auto.AUTO);
+            case NONE -> builder.toolChoice(ChatCompletionToolChoiceOption.Auto.NONE);
+            case REQUIRED -> builder.toolChoice(ChatCompletionToolChoiceOption.Auto.REQUIRED);
+            case FUNCTION -> builder.toolChoice(ChatCompletionNamedToolChoice.builder()
+                    .function(ChatCompletionNamedToolChoice.Function.builder()
+                            .name(tc.functionName())
+                            .build())
+                    .build());
+        }
+    }
+
+    /**
+     * Apply the sampling knobs this protocol supports. {@code max_tokens} maps to the modern
+     * {@code max_completion_tokens}; {@code reasoning_effort} is Responses-API-only and ignored here.
+     */
+    private static void applySampling(ChatCompletionCreateParams.Builder builder, SamplingParams s) {
+        if (s == null || s.isEmpty()) {
+            return;
+        }
+        if (s.temperature() != null) {
+            builder.temperature(s.temperature());
+        }
+        if (s.topP() != null) {
+            builder.topP(s.topP());
+        }
+        if (s.maxTokens() != null) {
+            builder.maxCompletionTokens(s.maxTokens().longValue());
+        }
+        if (s.seed() != null) {
+            builder.seed(s.seed());
+        }
+        if (s.stop() != null && !s.stop().isEmpty()) {
+            builder.stop(ChatCompletionCreateParams.Stop.ofStrings(s.stop()));
+        }
+    }
+
+    /** Map provider-agnostic content parts onto the SDK's multimodal content-part list. */
+    private static List<ChatCompletionContentPart> toContentParts(List<ChatPrompt.ContentPart> parts) {
+        return parts.stream()
+                .map(p -> switch (p.type()) {
+                    case TEXT -> ChatCompletionContentPart.ofText(
+                            ChatCompletionContentPartText.builder()
+                                    .text(p.text() != null ? p.text() : "")
+                                    .build());
+                    case IMAGE_URL -> ChatCompletionContentPart.ofImageUrl(
+                            ChatCompletionContentPartImage.builder()
+                                    .imageUrl(ChatCompletionContentPartImage.ImageUrl.builder()
+                                            .url(p.imageUrl())
+                                            .build())
+                                    .build());
+                })
+                .collect(Collectors.toList());
     }
 
     /** Map a {@link ToolSpec} onto the SDK's {@link ChatCompletionTool} (function type). */

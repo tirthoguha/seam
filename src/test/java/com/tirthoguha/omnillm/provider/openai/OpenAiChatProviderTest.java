@@ -217,6 +217,96 @@ class OpenAiChatProviderTest {
         assertThat(result.reply()).isEmpty();
     }
 
+    @Test
+    void chat_forwardsRequiredToolChoice() {
+        when(completions.create(any(ChatCompletionCreateParams.class)))
+                .thenReturn(completionReturning("ok"));
+
+        provider.chat(new ChatPrompt(
+                List.of(new ChatPrompt.Message(ChatPrompt.Role.USER, "weather?")),
+                "ai/gemma3", weatherTool(), com.tirthoguha.omnillm.provider.ToolChoice.required(),
+                com.tirthoguha.omnillm.provider.SamplingParams.NONE));
+
+        ChatCompletionCreateParams sent = capture();
+        assertThat(sent.toolChoice()).isPresent();
+        assertThat(sent.toolChoice().get().isAuto()).isTrue();
+        assertThat(sent.toolChoice().get().asAuto())
+                .isEqualTo(com.openai.models.chat.completions.ChatCompletionToolChoiceOption.Auto.REQUIRED);
+    }
+
+    @Test
+    void chat_forwardsForcedFunctionToolChoice() {
+        when(completions.create(any(ChatCompletionCreateParams.class)))
+                .thenReturn(completionReturning("ok"));
+
+        provider.chat(new ChatPrompt(
+                List.of(new ChatPrompt.Message(ChatPrompt.Role.USER, "weather?")),
+                "ai/gemma3", weatherTool(),
+                com.tirthoguha.omnillm.provider.ToolChoice.function("get_weather"),
+                com.tirthoguha.omnillm.provider.SamplingParams.NONE));
+
+        ChatCompletionCreateParams sent = capture();
+        assertThat(sent.toolChoice()).isPresent();
+        assertThat(sent.toolChoice().get().isNamedToolChoice()).isTrue();
+        assertThat(sent.toolChoice().get().asNamedToolChoice().function().name())
+                .isEqualTo("get_weather");
+    }
+
+    @Test
+    void chat_forwardsSamplingParams() {
+        when(completions.create(any(ChatCompletionCreateParams.class)))
+                .thenReturn(completionReturning("ok"));
+
+        var sampling = new com.tirthoguha.omnillm.provider.SamplingParams(
+                0.2, 0.9, 128, List.of("STOP"), 42L, null);
+        provider.chat(new ChatPrompt(
+                List.of(new ChatPrompt.Message(ChatPrompt.Role.USER, "hi")),
+                "ai/gemma3", List.of(), null, sampling));
+
+        ChatCompletionCreateParams sent = capture();
+        assertThat(sent.temperature()).hasValue(0.2);
+        assertThat(sent.topP()).hasValue(0.9);
+        assertThat(sent.maxCompletionTokens()).hasValue(128L);
+        assertThat(sent.seed()).hasValue(42L);
+        assertThat(sent.stop()).isPresent();
+        assertThat(sent.stop().get().asStrings()).containsExactly("STOP");
+    }
+
+    @Test
+    void chat_forwardsMultimodalUserMessageAsContentPartArray() {
+        when(completions.create(any(ChatCompletionCreateParams.class)))
+                .thenReturn(completionReturning("a cat"));
+
+        ChatPrompt.Message multimodal = new ChatPrompt.Message(
+                ChatPrompt.Role.USER, "what is this?", List.of(), null,
+                List.of(ChatPrompt.ContentPart.text("what is this?"),
+                        ChatPrompt.ContentPart.imageUrl("data:image/png;base64,AAAA")));
+        provider.chat(new ChatPrompt(List.of(multimodal), "ai/gemma3"));
+
+        var userContent = capture().messages().get(0).asUser().content();
+        assertThat(userContent.isArrayOfContentParts()).isTrue();
+        var parts = userContent.asArrayOfContentParts();
+        assertThat(parts).hasSize(2);
+        assertThat(parts.get(0).isText()).isTrue();
+        assertThat(parts.get(1).isImageUrl()).isTrue();
+        assertThat(parts.get(1).asImageUrl().imageUrl().url())
+                .isEqualTo("data:image/png;base64,AAAA");
+    }
+
+    /** Capture the single params object passed to the mocked completions.create(...). */
+    private ChatCompletionCreateParams capture() {
+        ArgumentCaptor<ChatCompletionCreateParams> captor =
+                ArgumentCaptor.forClass(ChatCompletionCreateParams.class);
+        verify(completions).create(captor.capture());
+        return captor.getValue();
+    }
+
+    private static List<ToolSpec> weatherTool() {
+        return List.of(new ToolSpec("get_weather", "Get weather for a city",
+                java.util.Map.of("type", "object",
+                        "properties", java.util.Map.of("city", java.util.Map.of("type", "string")))));
+    }
+
     // --- helpers that build the SDK response objects a real backend would return ---
 
     private static ChatCompletion completionReturning(String content) {

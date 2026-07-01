@@ -29,7 +29,9 @@ import com.tirthoguha.omnillm.provider.ChatPrompt;
 import com.tirthoguha.omnillm.provider.ChatResult;
 import com.tirthoguha.omnillm.provider.ChatStreamEvent;
 import com.tirthoguha.omnillm.provider.EmbeddingResult;
+import com.tirthoguha.omnillm.provider.SamplingParams;
 import com.tirthoguha.omnillm.provider.ToolCall;
+import com.tirthoguha.omnillm.provider.ToolChoice;
 import com.tirthoguha.omnillm.provider.ToolSpec;
 import com.tirthoguha.omnillm.service.ChatService;
 import com.tirthoguha.omnillm.service.EmbeddingService;
@@ -115,12 +117,15 @@ public class OpenAiCompatController {
 
         // Map request tools → provider-agnostic ToolSpec list (shared by both paths).
         List<ToolSpec> tools = mapTools(request.tools());
+        ToolChoice toolChoice = mapToolChoice(request.toolChoice());
+        SamplingParams sampling = mapSampling(request);
 
         if (request.streaming()) {
-            return streamCompletion(messages, parsed, tools);
+            return streamCompletion(messages, parsed, tools, toolChoice, sampling);
         }
 
-        ChatResult result = chatService.complete(messages, parsed.backend(), parsed.model(), tools);
+        ChatResult result = chatService.complete(
+                messages, parsed.backend(), parsed.model(), tools, toolChoice, sampling);
         return OpenAiChatCompletionResponse.of(
                 newId(), Instant.now().getEpochSecond(), result.model(), result);
     }
@@ -128,7 +133,8 @@ public class OpenAiCompatController {
     // --- streaming ----------------------------------------------------------
 
     private SseEmitter streamCompletion(List<ChatPrompt.Message> messages, ParsedModel parsed,
-                                        List<ToolSpec> tools) {
+                                        List<ToolSpec> tools, ToolChoice toolChoice,
+                                        SamplingParams sampling) {
         // Resolve + validate synchronously so an unknown backend is a 400 JSON error, not a broken
         // stream after headers are already committed.
         ChatService.Resolved r = chatService.resolve(parsed.backend(), parsed.model());
@@ -138,7 +144,7 @@ public class OpenAiCompatController {
         String model = r.model();
 
         sendChunk(emitter, OpenAiChatCompletionChunk.role(id, created, model));   // opening role frame
-        chatService.runStreamEvents(r.backend(), r.model(), messages, tools,
+        chatService.runStreamEvents(r.backend(), r.model(), messages, tools, toolChoice, sampling,
                 event -> {
                     // Fan the provider-agnostic events out onto OpenAI chunk frames.
                     if (event instanceof ChatStreamEvent.TextDelta text) {
@@ -226,7 +232,8 @@ public class OpenAiCompatController {
             return new ChatPrompt.Message(role, textOf(m.content()), toolCalls, null);
         }
 
-        return new ChatPrompt.Message(role, textOf(m.content()));
+        // Otherwise carry any multimodal parts (image_url) through alongside the flattened text.
+        return new ChatPrompt.Message(role, textOf(m.content()), List.of(), null, partsOf(m.content()));
     }
 
     private static ChatPrompt.Role roleOf(String role) {
@@ -261,6 +268,40 @@ public class OpenAiCompatController {
         return content.toString();
     }
 
+    /**
+     * Extract multimodal content parts (text + {@code image_url}) from OpenAI array content, in order.
+     * Returns an empty list for plain-string content (the {@code content} string then carries the text).
+     * OpenAI's {@code image_url} may be an object ({@code {"url":…}}) or a bare string; both are handled.
+     */
+    private static List<ChatPrompt.ContentPart> partsOf(Object content) {
+        if (!(content instanceof List<?> arr)) {
+            return List.of();
+        }
+        List<ChatPrompt.ContentPart> parts = new java.util.ArrayList<>();
+        for (Object part : arr) {
+            if (!(part instanceof Map<?, ?> map)) {
+                continue;
+            }
+            if ("image_url".equals(map.get("type"))) {
+                String url = imageUrlOf(map.get("image_url"));
+                if (url != null) {
+                    parts.add(ChatPrompt.ContentPart.imageUrl(url));
+                }
+            } else if (map.get("text") instanceof String text) {
+                parts.add(ChatPrompt.ContentPart.text(text));
+            }
+        }
+        return parts;
+    }
+
+    /** Pull the URL out of an OpenAI {@code image_url} part ({@code {"url":…}} object or bare string). */
+    private static String imageUrlOf(Object imageUrl) {
+        if (imageUrl instanceof Map<?, ?> map && map.get("url") instanceof String url) {
+            return url;
+        }
+        return imageUrl instanceof String s ? s : null;
+    }
+
     /** Map the request's {@code tools} list onto provider-agnostic {@link ToolSpec}s. */
     private static List<ToolSpec> mapTools(List<OpenAiChatCompletionRequest.Tool> tools) {
         if (tools == null || tools.isEmpty()) {
@@ -273,6 +314,61 @@ public class OpenAiCompatController {
                         t.function().description(),
                         t.function().parameters()))
                 .toList();
+    }
+
+    /**
+     * Map the request's {@code tool_choice} onto a provider-agnostic {@link ToolChoice}. OpenAI allows
+     * either a string ({@code "auto"}/{@code "none"}/{@code "required"}) or a
+     * {@code {"type":"function","function":{"name":…}}} object forcing one function. An absent or
+     * unrecognised value returns {@code null} — the provider then forwards no tool_choice.
+     */
+    private static ToolChoice mapToolChoice(Object raw) {
+        if (raw instanceof String s) {
+            return switch (s.toLowerCase(Locale.ROOT)) {
+                case "auto" -> ToolChoice.auto();
+                case "none" -> ToolChoice.none();
+                case "required", "any" -> ToolChoice.required();
+                default -> null;   // unknown string → leave selection to the backend
+            };
+        }
+        if (raw instanceof Map<?, ?> map && map.get("function") instanceof Map<?, ?> fn
+                && fn.get("name") instanceof String name && StringUtils.hasText(name)) {
+            return ToolChoice.function(name);
+        }
+        return null;
+    }
+
+    /**
+     * Collect the request's sampling knobs into a provider-agnostic {@link SamplingParams}. Prefers
+     * {@code max_completion_tokens} over the legacy {@code max_tokens} when both are present. Returns
+     * {@link SamplingParams#NONE} when nothing is set.
+     */
+    private static SamplingParams mapSampling(OpenAiChatCompletionRequest request) {
+        Integer maxTokens = request.maxCompletionTokens() != null
+                ? request.maxCompletionTokens() : request.maxTokens();
+        SamplingParams sampling = new SamplingParams(
+                request.temperature(),
+                request.topP(),
+                maxTokens,
+                mapStop(request.stop()),
+                request.seed(),
+                request.reasoningEffort());
+        return sampling.isEmpty() ? SamplingParams.NONE : sampling;
+    }
+
+    /** Normalise {@code stop} (a string or array of strings) to a list; {@code null} when unset. */
+    private static List<String> mapStop(Object stop) {
+        if (stop instanceof String s) {
+            return s.isEmpty() ? null : List.of(s);
+        }
+        if (stop instanceof List<?> items) {
+            List<String> out = items.stream()
+                    .filter(i -> i instanceof String)
+                    .map(i -> (String) i)
+                    .toList();
+            return out.isEmpty() ? null : out;
+        }
+        return null;
     }
 
     /** Normalise the embeddings {@code input} (a string or array of strings) to a list of texts. */

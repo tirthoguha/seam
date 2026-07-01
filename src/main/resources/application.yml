@@ -34,7 +34,10 @@ app:
       docker:
         base-url: ${DMR_BASE_URL:http://localhost:12434/engines/v1}
         api-key: docker          # ignored by Model Runner, but the SDK requires a non-blank key
-        model: ${DMR_MODEL:ai/gemma3}
+        # Gemma 4 E2B: smallest Gemma 4, multimodal + native function calling (whether tool_calls are
+        # parsed depends on the DMR/llama.cpp build — see .repoagent/knowledge.md). Pull once:
+        #   docker model pull ai/gemma4:E2B
+        model: ${DMR_MODEL:ai/gemma4:E2B}
         # Local embeddings via Docker Model Runner. Pull an embedding model first, e.g.
         #   docker model pull ai/mxbai-embed-large
         # and override DMR_EMBED_MODEL if your runtime exposes a different id.

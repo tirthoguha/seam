@@ -8,19 +8,30 @@ import java.util.stream.Collectors;
 import com.openai.client.OpenAIClient;
 import com.openai.core.JsonValue;
 import com.openai.errors.OpenAIException;
+import com.openai.models.Reasoning;
+import com.openai.models.ReasoningEffort;
+import com.openai.models.responses.EasyInputMessage;
 import com.openai.models.responses.FunctionTool;
 import com.openai.models.responses.Response;
 import com.openai.models.responses.ResponseCreateParams;
 import com.openai.models.responses.ResponseFunctionToolCall;
+import com.openai.models.responses.ResponseInputContent;
+import com.openai.models.responses.ResponseInputImage;
 import com.openai.models.responses.ResponseInputItem;
+import com.openai.models.responses.ResponseInputText;
 import com.openai.models.responses.ResponseOutputItem;
 import com.openai.models.responses.ResponseOutputMessage;
 import com.openai.models.responses.Tool;
+import com.openai.models.responses.ToolChoiceFunction;
+import com.openai.models.responses.ToolChoiceOptions;
 import com.tirthoguha.omnillm.provider.ChatProvider;
 import com.tirthoguha.omnillm.provider.ChatProviderException;
 import com.tirthoguha.omnillm.provider.ChatPrompt;
 import com.tirthoguha.omnillm.provider.ChatResult;
+import com.tirthoguha.omnillm.provider.ChatStreamEvent;
+import com.tirthoguha.omnillm.provider.SamplingParams;
 import com.tirthoguha.omnillm.provider.ToolCall;
+import com.tirthoguha.omnillm.provider.ToolChoice;
 import com.tirthoguha.omnillm.provider.ToolSpec;
 import com.tirthoguha.omnillm.provider.Usage;
 
@@ -169,7 +180,7 @@ public class OpenAiResponsesProvider implements ChatProvider {
                         ResponseInputItem.ofEasyInputMessage(
                                 com.openai.models.responses.EasyInputMessage.builder()
                                         .role(com.openai.models.responses.EasyInputMessage.Role.USER)
-                                        .content(message.content() != null ? message.content() : "")
+                                        .content(userContent(message))
                                         .build()));
                 case ASSISTANT -> {
                     if (!message.toolCalls().isEmpty()) {
@@ -215,15 +226,83 @@ public class OpenAiResponsesProvider implements ChatProvider {
             builder.instructions(instructions.toString().strip());
         }
 
-        // Attach function tools when the prompt carries any.
+        // Attach function tools when the prompt carries any. tool_choice only makes sense
+        // alongside tools, so it is forwarded only in that case.
         if (!prompt.tools().isEmpty()) {
             List<Tool> sdkTools = prompt.tools().stream()
                     .map(OpenAiResponsesProvider::toSdkTool)
                     .collect(Collectors.toList());
             builder.tools(sdkTools);
+            applyToolChoice(builder, prompt.toolChoice());
         }
 
+        applySampling(builder, prompt.sampling());
+
         return builder.build();
+    }
+
+    /** Forward a {@link ToolChoice} onto the Responses request; no-op when unset. */
+    private static void applyToolChoice(ResponseCreateParams.Builder builder, ToolChoice tc) {
+        if (tc == null) {
+            return;
+        }
+        switch (tc.mode()) {
+            case AUTO -> builder.toolChoice(ToolChoiceOptions.AUTO);
+            case NONE -> builder.toolChoice(ToolChoiceOptions.NONE);
+            case REQUIRED -> builder.toolChoice(ToolChoiceOptions.REQUIRED);
+            case FUNCTION -> builder.toolChoice(ToolChoiceFunction.builder()
+                    .name(tc.functionName())
+                    .build());
+        }
+    }
+
+    /**
+     * Apply the sampling knobs the Responses API supports. {@code max_tokens} maps to
+     * {@code max_output_tokens}; {@code reasoning_effort} maps to the reasoning config.
+     * {@code stop}/{@code seed} have no Responses-API equivalent and are ignored here.
+     */
+    private static void applySampling(ResponseCreateParams.Builder builder, SamplingParams s) {
+        if (s == null || s.isEmpty()) {
+            return;
+        }
+        if (s.temperature() != null) {
+            builder.temperature(s.temperature());
+        }
+        if (s.topP() != null) {
+            builder.topP(s.topP());
+        }
+        if (s.maxTokens() != null) {
+            builder.maxOutputTokens(s.maxTokens().longValue());
+        }
+        if (s.reasoningEffort() != null && !s.reasoningEffort().isBlank()) {
+            builder.reasoning(Reasoning.builder()
+                    .effort(ReasoningEffort.of(s.reasoningEffort()))
+                    .build());
+        }
+    }
+
+    /**
+     * Build the Responses API content for a user turn: a multimodal content list (ordered text +
+     * images) when the message carries image parts, otherwise a plain text string.
+     */
+    private static EasyInputMessage.Content userContent(ChatPrompt.Message message) {
+        if (message.hasImageParts()) {
+            List<ResponseInputContent> content = message.parts().stream()
+                    .map(p -> switch (p.type()) {
+                        case TEXT -> ResponseInputContent.ofInputText(
+                                ResponseInputText.builder()
+                                        .text(p.text() != null ? p.text() : "")
+                                        .build());
+                        case IMAGE_URL -> ResponseInputContent.ofInputImage(
+                                ResponseInputImage.builder()
+                                        .imageUrl(p.imageUrl())
+                                        .detail(ResponseInputImage.Detail.AUTO)
+                                        .build());
+                    })
+                    .collect(Collectors.toList());
+            return EasyInputMessage.Content.ofResponseInputMessageContentList(content);
+        }
+        return EasyInputMessage.Content.ofTextInput(message.content() != null ? message.content() : "");
     }
 
     private static void append(StringBuilder sb, String text) {

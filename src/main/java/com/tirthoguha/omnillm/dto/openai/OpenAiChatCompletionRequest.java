@@ -16,7 +16,15 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * @param messages the conversation (system / user / assistant / tool turns), in order
  * @param stream   whether to stream the response as SSE; defaults to false when absent
  * @param tools    optional list of function-tool declarations the model may call
- * @param toolChoice optional override for tool selection behaviour (ignored for now, forwarded as-is)
+ * @param toolChoice optional override for tool selection ({@code "auto"}/{@code "none"}/{@code "required"}
+ *                   or a {@code {"type":"function","function":{"name":…}}} object); forwarded to the backend
+ * @param temperature          optional sampling temperature
+ * @param topP                 optional nucleus-sampling mass ({@code top_p})
+ * @param maxTokens            optional generation cap ({@code max_tokens}, legacy)
+ * @param maxCompletionTokens  optional generation cap ({@code max_completion_tokens}, preferred when present)
+ * @param stop                 optional stop sequence(s): a string or array of strings
+ * @param seed                 optional deterministic-sampling seed
+ * @param reasoningEffort      optional reasoning effort ({@code reasoning_effort}); Responses API models only
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record OpenAiChatCompletionRequest(
@@ -24,7 +32,14 @@ public record OpenAiChatCompletionRequest(
         List<Message> messages,
         Boolean stream,
         List<Tool> tools,
-        @JsonProperty("tool_choice") Object toolChoice) {
+        @JsonProperty("tool_choice") Object toolChoice,
+        Double temperature,
+        @JsonProperty("top_p") Double topP,
+        @JsonProperty("max_tokens") Integer maxTokens,
+        @JsonProperty("max_completion_tokens") Integer maxCompletionTokens,
+        Object stop,
+        Long seed,
+        @JsonProperty("reasoning_effort") String reasoningEffort) {
 
     /** True only when the client explicitly asked to stream. */
     public boolean streaming() {

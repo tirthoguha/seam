@@ -58,6 +58,24 @@ class BackendConnectivityIT {
         confirmResponse("openai", "https://api.openai.com/v1", apiKey, env("OPENAI_MODEL", "gpt-4o-mini"));
     }
 
+    @Test
+    @DisplayName("offline · Docker Model Runner embeddings")
+    void dockerModelRunnerEmbeds() {
+        String baseUrl = env("DMR_BASE_URL", "http://localhost:12434/engines/v1");
+        assumeReachable("Docker Model Runner", baseUrl);
+        confirmEmbedding("docker", baseUrl, "docker", env("DMR_EMBED_MODEL", "ai/mxbai-embed-large"));
+    }
+
+    @Test
+    @DisplayName("online · OpenAI cloud embeddings")
+    void openAiCloudEmbeds() {
+        String apiKey = System.getenv("OPENAI_API_KEY");
+        Assumptions.assumeTrue(apiKey != null && !apiKey.isBlank(),
+                "OPENAI_API_KEY not set — skipping online (OpenAI cloud) embeddings check");
+        confirmEmbedding("openai", "https://api.openai.com/v1", apiKey,
+                env("OPENAI_EMBED_MODEL", "text-embedding-3-small"));
+    }
+
     // --- shared logic -------------------------------------------------------
 
     /** Builds a client for one backend, sends the prompt, prints and asserts a non-blank reply. */
@@ -85,6 +103,33 @@ class BackendConnectivityIT {
         assertThat(reply)
                 .as("%s (%s) should return a non-blank reply", name, baseUrl)
                 .isNotBlank();
+    }
+
+    /** Builds a client for one backend, embeds a short text, prints and asserts a non-empty vector. */
+    private void confirmEmbedding(String name, String baseUrl, String apiKey, String model) {
+        OpenAIClient client = OpenAIOkHttpClient.builder()
+                .apiKey(apiKey)
+                .baseUrl(baseUrl)
+                .build();
+
+        com.openai.models.embeddings.EmbeddingCreateParams params =
+                com.openai.models.embeddings.EmbeddingCreateParams.builder()
+                        .model(model)
+                        .input(PROMPT)
+                        .build();
+
+        var response = client.embeddings().create(params);
+        var vector = response.data().stream()
+                .findFirst()
+                .map(com.openai.models.embeddings.Embedding::embedding)
+                .orElse(java.util.List.of());
+
+        System.out.printf("✅ [%-6s] %-22s @ %s%n      → %d-dim vector%n",
+                name, model, baseUrl, vector.size());
+
+        assertThat(vector)
+                .as("%s (%s) should return a non-empty embedding vector", name, baseUrl)
+                .isNotEmpty();
     }
 
     /** Skip (don't fail) the test when the local endpoint isn't listening. */

@@ -22,6 +22,8 @@ import com.tirthoguha.omnillm.provider.ChatProviderRegistry;
 import com.tirthoguha.omnillm.provider.ChatPrompt;
 import com.tirthoguha.omnillm.provider.ChatResult;
 import com.tirthoguha.omnillm.provider.ChatStreamEvent;
+import com.tirthoguha.omnillm.provider.SamplingParams;
+import com.tirthoguha.omnillm.provider.ToolChoice;
 import com.tirthoguha.omnillm.provider.ToolSpec;
 
 /**
@@ -97,8 +99,20 @@ public class ChatService {
      */
     public ChatResult complete(List<ChatPrompt.Message> messages, String requestedBackend,
                                String requestedModel, List<ToolSpec> tools) {
+        return complete(messages, requestedBackend, requestedModel, tools, null, SamplingParams.NONE);
+    }
+
+    /**
+     * Blocking completion for a full conversation with function tools, an optional {@code toolChoice}
+     * directive, and optional {@code sampling} overrides — all threaded into the {@link ChatPrompt}
+     * so the provider can forward what its wire protocol supports. Backend/model fall back to defaults
+     * when blank.
+     */
+    public ChatResult complete(List<ChatPrompt.Message> messages, String requestedBackend,
+                               String requestedModel, List<ToolSpec> tools,
+                               ToolChoice toolChoice, SamplingParams sampling) {
         Resolved r = resolve(requestedBackend, requestedModel);
-        return registry.get(r.backend()).chat(new ChatPrompt(messages, r.model(), tools));
+        return registry.get(r.backend()).chat(new ChatPrompt(messages, r.model(), tools, toolChoice, sampling));
     }
 
     /**
@@ -129,10 +143,11 @@ public class ChatService {
      * {@code onError} on failure. Callers format the transport (SSE, …) themselves.
      */
     public void runStreamEvents(String backend, String model, List<ChatPrompt.Message> messages,
-                                List<ToolSpec> tools, Consumer<ChatStreamEvent> onEvent,
+                                List<ToolSpec> tools, ToolChoice toolChoice, SamplingParams sampling,
+                                Consumer<ChatStreamEvent> onEvent,
                                 Runnable onComplete, Consumer<Throwable> onError) {
         ChatProvider provider = registry.get(backend);
-        ChatPrompt prompt = new ChatPrompt(messages, model, tools);
+        ChatPrompt prompt = new ChatPrompt(messages, model, tools, toolChoice, sampling);
         streamExecutor.execute(() -> {
             try {
                 provider.stream(prompt, onEvent);
