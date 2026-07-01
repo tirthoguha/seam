@@ -6,4 +6,3 @@ target/
 .vscode/
 .claude/settings.local.json
 .env
-.repoagent/
