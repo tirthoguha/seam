@@ -1,4 +1,4 @@
-# OmniLLM Spring
+# Seam Spring
 
 > **Concept only.** A personal proof-of-concept for demo and learning — not a maintained
 > library or product. Expect rough edges.
@@ -107,7 +107,7 @@ es.addEventListener('done', () => es.close());
 
 ### OpenAI-compatible gateway (`/v1`) — for Open WebUI etc.
 
-OmniLLM also speaks the OpenAI API, so any OpenAI client can drive it while requests still flow
+Seam also speaks the OpenAI API, so any OpenAI client can drive it while requests still flow
 through the same backend-routing seam. The OpenAI `model` field doubles as the backend selector,
 read as `<backend>:<model>` (a bare backend name uses that backend's default model).
 
@@ -124,9 +124,9 @@ The gateway supports **OpenAI-style function/tool calling**: pass a `tools` arra
 
 The request also honours **`tool_choice`** (`"auto"`/`"none"`/`"required"` or a `{"type":"function","function":{"name":…}}` forced call), the usual **sampling params** (`temperature`, `top_p`, `max_tokens`/`max_completion_tokens`, `stop`, `seed`, and — Responses-API models only — `reasoning_effort`), and **multimodal input** (a `content` array mixing `text` and `image_url` parts, including `data:` base64 uploads) — each forwarded to whatever the chosen backend's wire protocol supports.
 
-> **Heads-up on the default local model (`ai/gemma4:E2B`).** It's a *reasoning* model — it spends tokens on an internal chain-of-thought before the answer, so **give it a generous `max_tokens` (≥ ~200)**. A tight cap (e.g. 60) gets fully consumed by reasoning and comes back with empty `content` and `finish_reason:length` — this affects plain chat, tool calls, forced `tool_choice`, **and vision** alike. With enough budget, `tool_choice` `"auto"` / `"required"` / forced-function and **vision (`image_url` input) all work locally** — gemma4:E2B correctly reads image colors and layout. One genuine gemma4-on-DMR quirk (reproduces direct-to-DMR, so it's the model/runtime, not OmniLLM): `tool_choice:"none"` can leak a malformed tool-call string into `content` — OmniLLM strips this via its app-side fallback parser. Cloud models (`gpt-4o-mini`, `gpt-5.5`) honour all `tool_choice` modes and vision server-side.
+> **Heads-up on the default local model (`ai/gemma4:E2B`).** It's a *reasoning* model — it spends tokens on an internal chain-of-thought before the answer, so **give it a generous `max_tokens` (≥ ~200)**. A tight cap (e.g. 60) gets fully consumed by reasoning and comes back with empty `content` and `finish_reason:length` — this affects plain chat, tool calls, forced `tool_choice`, **and vision** alike. With enough budget, `tool_choice` `"auto"` / `"required"` / forced-function and **vision (`image_url` input) all work locally** — gemma4:E2B correctly reads image colors and layout. One genuine gemma4-on-DMR quirk (reproduces direct-to-DMR, so it's the model/runtime, not Seam): `tool_choice:"none"` can leak a malformed tool-call string into `content` — Seam strips this via its app-side fallback parser. Cloud models (`gpt-4o-mini`, `gpt-5.5`) honour all `tool_choice` modes and vision server-side.
 
-> **Which models actually emit `tool_calls`?** It depends on the model *and* the runtime, not on OmniLLM — the gateway always forwards `tools`, but a model returns `tool_calls` only if its runtime parses them. Models **tested locally so far** (Docker Model Runner):
+> **Which models actually emit `tool_calls`?** It depends on the model *and* the runtime, not on Seam — the gateway always forwards `tools`, but a model returns `tool_calls` only if its runtime parses them. Models **tested locally so far** (Docker Model Runner):
 >
 > | local model (DMR) | `tool_calls`? | note |
 > |---|:--:|---|
@@ -182,7 +182,7 @@ docker compose -f compose.openwebui.yaml up -d
 Open WebUI's chats, settings, and uploads persist in the `open-webui` Docker volume across restarts
 (`docker compose -f compose.openwebui.yaml down` keeps it; add `-v` only to wipe it). The gateway
 lives in
-[`OpenAiCompatController`](src/main/java/com/tirthoguha/omnillm/controller/OpenAiCompatController.java);
+[`OpenAiCompatController`](src/main/java/com/tirthoguha/seam/controller/OpenAiCompatController.java);
 it reuses `ChatService`, so per-backend routing is preserved.
 
 ### Health / metrics (Spring Boot Actuator)
@@ -203,7 +203,7 @@ live markdown rendering, and a per-reply `backend · model` badge.
 
 Because the page runs on a different origin than the API, the app enables narrow CORS for the chat
 endpoints (localhost origins + `file://`); see
-[`CorsConfig`](src/main/java/com/tirthoguha/omnillm/config/CorsConfig.java). Start the app, then
+[`CorsConfig`](src/main/java/com/tirthoguha/seam/config/CorsConfig.java). Start the app, then
 open the page any way you like:
 
 ```bash
@@ -284,24 +284,24 @@ OPENAI_API_KEY=sk-... mvn test -Dtest=BackendConnectivityIT -DfailIfNoTests=fals
 ## How it works
 
 Everything talks to backends through one seam — the
-[`ChatProvider`](src/main/java/com/tirthoguha/omnillm/provider/ChatProvider.java) interface — with
-provider-agnostic types ([`ChatPrompt`](src/main/java/com/tirthoguha/omnillm/provider/ChatPrompt.java)
-/ [`ChatResult`](src/main/java/com/tirthoguha/omnillm/provider/ChatResult.java)) that keep the OpenAI
+[`ChatProvider`](src/main/java/com/tirthoguha/seam/provider/ChatProvider.java) interface — with
+provider-agnostic types ([`ChatPrompt`](src/main/java/com/tirthoguha/seam/provider/ChatPrompt.java)
+/ [`ChatResult`](src/main/java/com/tirthoguha/seam/provider/ChatResult.java)) that keep the OpenAI
 SDK from leaking past the boundary.
 
 - The only class importing `com.openai.*` is
-  [`OpenAiChatProvider`](src/main/java/com/tirthoguha/omnillm/provider/openai/OpenAiChatProvider.java),
+  [`OpenAiChatProvider`](src/main/java/com/tirthoguha/seam/provider/openai/OpenAiChatProvider.java),
   created once per backend (each with its own base-url/key client) and registered by name in the
-  [`ChatProviderRegistry`](src/main/java/com/tirthoguha/omnillm/provider/ChatProviderRegistry.java).
+  [`ChatProviderRegistry`](src/main/java/com/tirthoguha/seam/provider/ChatProviderRegistry.java).
   It wraps SDK failures in a stable `ChatProviderException`.
-- [`ChatService`](src/main/java/com/tirthoguha/omnillm/service/ChatService.java) resolves backend →
+- [`ChatService`](src/main/java/com/tirthoguha/seam/service/ChatService.java) resolves backend →
   model → provider, and adapts the token stream onto SSE.
-- [`ChatController`](src/main/java/com/tirthoguha/omnillm/controller/ChatController.java) validates
+- [`ChatController`](src/main/java/com/tirthoguha/seam/controller/ChatController.java) validates
   input; failures and provider errors become RFC 7807 `ProblemDetail` responses via
-  [`GlobalExceptionHandler`](src/main/java/com/tirthoguha/omnillm/web/GlobalExceptionHandler.java)
+  [`GlobalExceptionHandler`](src/main/java/com/tirthoguha/seam/web/GlobalExceptionHandler.java)
   (`400` validation / unknown backend, `502` upstream error, `500` otherwise).
 - Config binds to an immutable, validated record
-  ([`LlmProperties`](src/main/java/com/tirthoguha/omnillm/config/LlmProperties.java)) so the app
+  ([`LlmProperties`](src/main/java/com/tirthoguha/seam/config/LlmProperties.java)) so the app
   fails fast on missing settings.
 
 Adding a native (non-`/v1`) backend is one new `ChatProvider` dropped into the registry — nothing

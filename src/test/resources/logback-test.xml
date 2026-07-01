@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Test-only logging config. Inherits Spring Boot's default console appender.
+
+  GlobalExceptionHandler logs provider/unexpected failures at ERROR with the full
+  stack trace — correct in production, but several tests deliberately trigger those
+  paths (e.g. ChatControllerTest#mapsProviderFailureTo502), so the trace is expected
+  noise here. Silence just that one logger during tests; production logging is untouched.
+-->
+<configuration>
+  <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+  <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+  <logger name="com.tirthoguha.seam.web.GlobalExceptionHandler" level="OFF"/>
+
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+  </root>
+</configuration>

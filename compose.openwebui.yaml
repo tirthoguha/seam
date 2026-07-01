@@ -1,14 +1,14 @@
-# Run Open WebUI on top of OmniLLM's OpenAI-compatible gateway — one command, two containers.
+# Run Open WebUI on top of Seam's OpenAI-compatible gateway — one command, two containers.
 #   docker model pull ai/gemma4:E2B  # once, so the model is available to Model Runner
 #   docker compose -f compose.openwebui.yaml up --build -d
 #   open http://localhost:3000
 #
-# Open WebUI talks to OmniLLM as if it were OpenAI (/v1); OmniLLM routes each request to the chosen
+# Open WebUI talks to Seam as if it were OpenAI (/v1); Seam routes each request to the chosen
 # backend. The model picker shows one entry per backend (<backend>:<model>).
 services:
   app:
     build: .
-    image: omnillm:latest
+    image: seam:latest
     environment:
       DEFAULT_BACKEND: docker
       # Reach the host's Docker Model Runner from inside the container via its gateway DNS.
@@ -27,9 +27,9 @@ services:
     ports:
       - "3000:8080"   # the UI: http://localhost:3000
     environment:
-      # Point Open WebUI's "OpenAI API" connection at the OmniLLM gateway.
+      # Point Open WebUI's "OpenAI API" connection at the Seam gateway.
       OPENAI_API_BASE_URL: http://app:8080/v1
-      OPENAI_API_KEY: omnillm        # ignored by OmniLLM, but Open WebUI requires a non-blank value
+      OPENAI_API_KEY: seam        # ignored by Seam, but Open WebUI requires a non-blank value
       ENABLE_OLLAMA_API: "false"     # OpenAI-compatible only; don't probe for Ollama
       WEBUI_AUTH: "false"            # skip the login/account step for a local demo
       # Optional: a HuggingFace token lifts the unauthenticated rate limit so the first-boot model
@@ -38,8 +38,8 @@ services:
       # NOTE: on FIRST boot Open WebUI downloads its own models (a SentenceTransformers embedding
       # model for RAG, a faster-whisper model for audio) from HuggingFace — a few hundred MB that can
       # be slow on unauthenticated/rate-limited connections, and the container shows "unhealthy" until
-      # it finishes. These are Open WebUI's own features (not OmniLLM); they cache in the volume below,
-      # so it only happens once. Chatting through the OmniLLM gateway does not depend on them.
+      # it finishes. These are Open WebUI's own features (not Seam); they cache in the volume below,
+      # so it only happens once. Chatting through the Seam gateway does not depend on them.
     depends_on:
       - app
     volumes:

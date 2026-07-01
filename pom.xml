@@ -12,9 +12,9 @@
     </parent>
 
     <groupId>com.tirthoguha</groupId>
-    <artifactId>omnillm</artifactId>
+    <artifactId>seam</artifactId>
     <version>0.0.1-SNAPSHOT</version>
-    <name>omnillm</name>
+    <name>seam</name>
     <description>Spring Boot + official OpenAI Java SDK, one client for OpenAI cloud and Docker Model Runner.</description>
 
     <properties>

@@ -5,7 +5,7 @@
 services:
   app:
     build: .
-    image: omnillm:latest
+    image: seam:latest
     ports:
       - "8080:8080"
     environment:

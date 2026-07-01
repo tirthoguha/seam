@@ -3,7 +3,7 @@ server:
 
 spring:
   application:
-    name: omnillm
+    name: seam
 
 # Production-ready endpoints. Health is public; keep the rest minimal for a POC.
 management:

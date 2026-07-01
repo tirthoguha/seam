@@ -1,4 +1,4 @@
-# AGENTS.md — OmniLLM repository supervisor contract
+# AGENTS.md — Seam repository supervisor contract
 
 This file is the entry point for any agent working in this repository. It is the **supervisor
 contract**: read it first, then the operating pack under [`.repoagent/`](.repoagent/). It was

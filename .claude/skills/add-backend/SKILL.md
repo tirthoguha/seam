@@ -1,11 +1,11 @@
 ---
 name: add-backend
-description: Add or adjust an LLM backend in OmniLLM. Use when the user wants to point at another OpenAI-compatible /v1 endpoint, add a model runtime (Ollama, vLLM, LM Studio, a second cloud key), change a backend's default model/base URL, or add a non-/v1 native backend. Keeps the provider seam intact and docs in sync.
+description: Add or adjust an LLM backend in Seam. Use when the user wants to point at another OpenAI-compatible /v1 endpoint, add a model runtime (Ollama, vLLM, LM Studio, a second cloud key), change a backend's default model/base URL, or add a non-/v1 native backend. Keeps the provider seam intact and docs in sync.
 ---
 
-# Add or adjust an OmniLLM backend
+# Add or adjust an Seam backend
 
-Adding a backend is OmniLLM's defining recurring task. There are two cases. **Decide which first.**
+Adding a backend is Seam's defining recurring task. There are two cases. **Decide which first.**
 
 ## Case A — OpenAI-compatible `/v1` backend (the common case)
 
