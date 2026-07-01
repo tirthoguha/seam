@@ -31,6 +31,7 @@ import com.tirthoguha.omnillm.provider.ChatResult;
 import com.tirthoguha.omnillm.provider.ChatStreamEvent;
 import com.tirthoguha.omnillm.provider.SamplingParams;
 import com.tirthoguha.omnillm.provider.ToolCall;
+import com.tirthoguha.omnillm.provider.ToolCallTextParser;
 import com.tirthoguha.omnillm.provider.ToolChoice;
 import com.tirthoguha.omnillm.provider.ToolSpec;
 import com.tirthoguha.omnillm.provider.Usage;
@@ -97,8 +98,9 @@ public class OpenAiChatProvider implements ChatProvider {
                             .collect(Collectors.toList()))
                     .orElse(List.of());
 
-            return new ChatResult(name, prompt.model(), reply, toolCalls,
+            ChatResult result = new ChatResult(name, prompt.model(), reply, toolCalls,
                     finishReason, extractUsage(completion));
+            return ToolCallTextParser.applyFallback(result, prompt);
         } catch (OpenAIException e) {
             throw new ChatProviderException(name, "OpenAI chat completion failed", e);
         }

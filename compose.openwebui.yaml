@@ -1,5 +1,5 @@
 # Run Open WebUI on top of OmniLLM's OpenAI-compatible gateway — one command, two containers.
-#   docker model pull ai/gemma3      # once, so the model is available to Model Runner
+#   docker model pull ai/gemma4:E2B  # once, so the model is available to Model Runner
 #   docker compose -f compose.openwebui.yaml up --build -d
 #   open http://localhost:3000
 #
@@ -13,7 +13,9 @@ services:
       DEFAULT_BACKEND: docker
       # Reach the host's Docker Model Runner from inside the container via its gateway DNS.
       DMR_BASE_URL: http://model-runner.docker.internal/engines/v1
-      DMR_MODEL: ai/gemma3
+      # Default chat model. gemma4:E2B is the app default and returns native tool_calls (auto mode);
+      # gemma3 does NOT (it emits an unparsed tool_code text block), so don't point the tool demo at it.
+      DMR_MODEL: ai/gemma4:E2B
       # Real OpenAI key (so the `openai` backend / openai:gpt-4o-mini model works). Set it in the
       # gitignored .env (OPENAI_API_KEY=sk-...). Left empty, the openai model just returns a 502.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
