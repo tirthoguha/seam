@@ -14,7 +14,7 @@ and OpenAI cloud for the next — no restart.
 
 | backend  | base URL                              | default model | needs            |
 |----------|---------------------------------------|---------------|------------------|
-| `docker` | `http://localhost:12434/engines/v1`   | `ai/gemma3`   | Docker Model Runner |
+| `docker` | `http://localhost:12434/engines/v1`   | `ai/gemma4:E2B`   | Docker Model Runner |
 | `openai` | `https://api.openai.com/v1`           | `gpt-4o-mini` | `OPENAI_API_KEY` |
 
 ---
@@ -29,7 +29,7 @@ and OpenAI cloud for the next — no restart.
     ```bash
     docker desktop enable model-runner --tcp 12434   # exposes it on localhost:12434
     docker model status                              # verify it's up
-    docker model pull ai/gemma3                       # pull the default model
+    docker model pull ai/gemma4:E2B                       # pull the default model
     ```
   - **and/or OpenAI cloud** — set `OPENAI_API_KEY` (only needed when you actually call it).
 
@@ -56,7 +56,7 @@ curl -s localhost:8080/chat \
 Response echoes which backend and model actually served it:
 
 ```json
-{"backend":"docker","model":"ai/gemma3","reply":"..."}
+{"backend":"docker","model":"ai/gemma4:E2B","reply":"..."}
 ```
 
 > If you get *connection refused*, the app isn't up yet (step 1) or nothing is on port 8080.
@@ -94,7 +94,7 @@ event.
 
 ```bash
 curl -N "localhost:8080/chat/stream?message=Tell%20me%20a%20joke&backend=docker"
-# data:{"t":"Why"}  data:{"t":" did"} ...  event:done data:{"backend":"docker","model":"ai/gemma3"}
+# data:{"t":"Why"}  data:{"t":" did"} ...  event:done data:{"backend":"docker","model":"ai/gemma4:E2B"}
 ```
 
 A browser client:
@@ -104,6 +104,86 @@ const es = new EventSource('http://localhost:8080/chat/stream?message=hi');
 es.onmessage = e => append(JSON.parse(e.data).t);
 es.addEventListener('done', () => es.close());
 ```
+
+### OpenAI-compatible gateway (`/v1`) — for Open WebUI etc.
+
+OmniLLM also speaks the OpenAI API, so any OpenAI client can drive it while requests still flow
+through the same backend-routing seam. The OpenAI `model` field doubles as the backend selector,
+read as `<backend>:<model>` (a bare backend name uses that backend's default model).
+
+```bash
+curl -s localhost:8080/v1/models          # one entry per backend: docker:ai/gemma4:E2B, openai:gpt-4o-mini
+
+curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model":"docker:ai/gemma4:E2B",
+  "messages":[{"role":"system","content":"Be terse."},{"role":"user","content":"hi"}]
+}'                                          # add "stream":true for SSE chat.completion.chunk + [DONE]
+```
+
+The gateway supports **OpenAI-style function/tool calling**: pass a `tools` array in your request and the model returns `tool_calls` with `finish_reason:"tool_calls"` — in both the blocking and streaming response. This works with both the Chat Completions and Responses API backends, so Open WebUI's native tool mode and other OpenAI-tool-aware clients work against either backend.
+
+The request also honours **`tool_choice`** (`"auto"`/`"none"`/`"required"` or a `{"type":"function","function":{"name":…}}` forced call), the usual **sampling params** (`temperature`, `top_p`, `max_tokens`/`max_completion_tokens`, `stop`, `seed`, and — Responses-API models only — `reasoning_effort`), and **multimodal input** (a `content` array mixing `text` and `image_url` parts, including `data:` base64 uploads) — each forwarded to whatever the chosen backend's wire protocol supports.
+
+> **Heads-up on the default local model (`ai/gemma4:E2B`).** It's a *reasoning* model — it spends tokens on an internal chain-of-thought before the answer, so **give it a generous `max_tokens` (≥ ~200)**. A tight cap (e.g. 60) gets fully consumed by reasoning and comes back with empty `content` and `finish_reason:length` — this affects plain chat, tool calls, forced `tool_choice`, **and vision** alike. With enough budget, `tool_choice` `"auto"` / `"required"` / forced-function and **vision (`image_url` input) all work locally** — gemma4:E2B correctly reads image colors and layout. One genuine gemma4-on-DMR quirk (reproduces direct-to-DMR, so it's the model/runtime, not OmniLLM): `tool_choice:"none"` can leak a malformed tool-call string into `content` — OmniLLM strips this via its app-side fallback parser. Cloud models (`gpt-4o-mini`, `gpt-5.5`) honour all `tool_choice` modes and vision server-side.
+
+> **Which models actually emit `tool_calls`?** It depends on the model *and* the runtime, not on OmniLLM — the gateway always forwards `tools`, but a model returns `tool_calls` only if its runtime parses them. Models **tested locally so far** (Docker Model Runner):
+>
+> | local model (DMR) | `tool_calls`? | note |
+> |---|:--:|---|
+> | `ai/gemma4:E2B` (default) | ✅ | native `tool_calls` — Gemma 4 has native function calling and this DMR build parses it |
+> | `ai/qwen2.5`, `ai/llama3.2` | ✅ | native `tool_calls` (blocking + streaming) |
+> | `ai/gemma3` | ❌ | emits a ` ```tool_code ` text block instead (older convention, not parsed) |
+> | `ai/smollm2` | ❌ | no tool-calling training |
+>
+> To check any other model, pull it, POST a `tools` request to `/v1/chat/completions`, see whether `tool_calls` come back, then remove it. Cloud models (`gpt-4o-mini`, `gpt-5.5`) parse tool calls server-side, so they never hit a runtime-parser limitation.
+
+**OpenAI-compatible embeddings** (`POST /v1/embeddings`) route through the same `<backend>:<model>` selector — local on Docker Model Runner or on OpenAI cloud — so Open WebUI's RAG/document indexing works too:
+
+```bash
+docker model pull ai/mxbai-embed-large      # a local embedding model (once)
+curl -s localhost:8080/v1/embeddings -H 'Content-Type: application/json' -d '{
+  "model":"docker:ai/mxbai-embed-large",
+  "input":"the quick brown fox"
+}'                                           # or "openai:text-embedding-3-small" for cloud
+```
+
+> Embedding choice is **sticky**: switching the embedding backend changes vector dimensions and forces an Open WebUI re-index (unlike per-message chat switching).
+
+**Run [Open WebUI](https://github.com/open-webui/open-webui) on top** — one command, two containers
+(the app + Open WebUI, wired together), see [`compose.openwebui.yaml`](compose.openwebui.yaml):
+
+```bash
+docker model pull ai/gemma4:E2B                 # pull the local model into Docker Model Runner (once)
+docker compose -f compose.openwebui.yaml up --build -d
+open http://localhost:3000                 # then pick a model (see below) and chat
+```
+
+**Local vs cloud — pick from the model picker.** Open WebUI's model dropdown lists one entry per
+backend:
+
+- `docker:ai/gemma4:E2B` — the **local** model (Docker Model Runner), works offline, no key.
+- `openai:gpt-4o-mini` — **OpenAI cloud**, needs a key (below).
+
+**Keys go in a gitignored `.env`** next to the compose file (never commit them). Only needed for the
+cloud backend (and, optionally, to speed up Open WebUI's first-boot model download):
+
+```bash
+# .env  (in the repo root)
+OPENAI_API_KEY=sk-...     # enables the openai:gpt-4o-mini model; omit to stay local-only
+HF_TOKEN=hf_...           # optional: lifts the HuggingFace rate limit on Open WebUI's first boot
+```
+
+After editing `.env`, apply it (env-only change — no rebuild needed):
+
+```bash
+docker compose -f compose.openwebui.yaml up -d
+```
+
+Open WebUI's chats, settings, and uploads persist in the `open-webui` Docker volume across restarts
+(`docker compose -f compose.openwebui.yaml down` keeps it; add `-v` only to wipe it). The gateway
+lives in
+[`OpenAiCompatController`](src/main/java/com/tirthoguha/omnillm/controller/OpenAiCompatController.java);
+it reuses `ChatService`, so per-backend routing is preserved.
 
 ### Health / metrics (Spring Boot Actuator)
 
@@ -150,9 +230,15 @@ OPENAI_API_KEY=sk-... mvn spring-boot:run \
 mvn spring-boot:run -Dspring-boot.run.arguments="--spring.profiles.active=docker"
 ```
 
-Per-backend env overrides: `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`,
-and `DMR_BASE_URL` / `DMR_MODEL`. See
+Per-backend env overrides: `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` /
+`OPENAI_EMBED_MODEL` / `OPENAI_API`, and `DMR_BASE_URL` / `DMR_MODEL` / `DMR_EMBED_MODEL`. See
 [`application.yml`](src/main/resources/application.yml).
+
+**Chat wire protocol per backend.** A backend's `api` is `chat` (Chat Completions, the default) or
+`responses` (OpenAI **Responses API**, for newer models like `gpt-5.5`). One provider seam hides which
+a backend speaks, so tool calling / sampling / vision all work either way. Opt in with
+`OPENAI_API=responses` (or `--app.llm.backends.openai.api=responses`) plus a Responses-capable
+`OPENAI_MODEL`.
 
 ---
 
@@ -163,7 +249,7 @@ so one command builds the image and starts it — no local Maven or JDK needed. 
 container and reaches **Docker Model Runner on the host** via its gateway DNS:
 
 ```bash
-docker model pull ai/gemma3        # pull the model into the host's Model Runner (once)
+docker model pull ai/gemma4:E2B        # pull the model into the host's Model Runner (once)
 docker compose up --build -d       # builds from the Dockerfile, then starts (compose.yaml)
 
 curl -s localhost:8080/chat -H 'Content-Type: application/json' \

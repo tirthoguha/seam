@@ -1,0 +1,49 @@
+# Run Open WebUI on top of OmniLLM's OpenAI-compatible gateway — one command, two containers.
+#   docker model pull ai/gemma4:E2B  # once, so the model is available to Model Runner
+#   docker compose -f compose.openwebui.yaml up --build -d
+#   open http://localhost:3000
+#
+# Open WebUI talks to OmniLLM as if it were OpenAI (/v1); OmniLLM routes each request to the chosen
+# backend. The model picker shows one entry per backend (<backend>:<model>).
+services:
+  app:
+    build: .
+    image: omnillm:latest
+    environment:
+      DEFAULT_BACKEND: docker
+      # Reach the host's Docker Model Runner from inside the container via its gateway DNS.
+      DMR_BASE_URL: http://model-runner.docker.internal/engines/v1
+      # Default chat model. gemma4:E2B is the app default and returns native tool_calls (auto mode);
+      # gemma3 does NOT (it emits an unparsed tool_code text block), so don't point the tool demo at it.
+      DMR_MODEL: ai/gemma4:E2B
+      # Real OpenAI key (so the `openai` backend / openai:gpt-4o-mini model works). Set it in the
+      # gitignored .env (OPENAI_API_KEY=sk-...). Left empty, the openai model just returns a 502.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    expose:
+      - "8080"   # reachable by open-webui over the compose network; no host port needed
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    ports:
+      - "3000:8080"   # the UI: http://localhost:3000
+    environment:
+      # Point Open WebUI's "OpenAI API" connection at the OmniLLM gateway.
+      OPENAI_API_BASE_URL: http://app:8080/v1
+      OPENAI_API_KEY: omnillm        # ignored by OmniLLM, but Open WebUI requires a non-blank value
+      ENABLE_OLLAMA_API: "false"     # OpenAI-compatible only; don't probe for Ollama
+      WEBUI_AUTH: "false"            # skip the login/account step for a local demo
+      # Optional: a HuggingFace token lifts the unauthenticated rate limit so the first-boot model
+      # downloads are fast. Set the real value in a gitignored .env (HF_TOKEN=hf_...) — never here.
+      HF_TOKEN: ${HF_TOKEN:-}
+      # NOTE: on FIRST boot Open WebUI downloads its own models (a SentenceTransformers embedding
+      # model for RAG, a faster-whisper model for audio) from HuggingFace — a few hundred MB that can
+      # be slow on unauthenticated/rate-limited connections, and the container shows "unhealthy" until
+      # it finishes. These are Open WebUI's own features (not OmniLLM); they cache in the volume below,
+      # so it only happens once. Chatting through the OmniLLM gateway does not depend on them.
+    depends_on:
+      - app
+    volumes:
+      - open-webui:/app/backend/data
+
+volumes:
+  open-webui:

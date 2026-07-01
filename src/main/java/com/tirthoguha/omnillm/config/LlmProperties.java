@@ -46,13 +46,38 @@ public record LlmProperties(
     /**
      * One OpenAI-compatible backend (OpenAI cloud, Docker Model Runner, …).
      *
-     * @param baseUrl OpenAI-compatible base URL, e.g. https://api.openai.com/v1
-     * @param apiKey  API key; real key for OpenAI, any non-blank placeholder for local runtimes
-     * @param model   default model id for this backend, e.g. gpt-4o-mini, gemma3, ai/gemma3
+     * <p>{@code baseUrl}, {@code apiKey}, and {@code model} are required (fail-fast at startup).
+     * {@code embeddingModel} and {@code api} are optional: a backend without an embedding model
+     * simply can't serve {@code /v1/embeddings}, and {@code api} defaults to {@code "chat"} (Chat
+     * Completions) — set it to {@code "responses"} to drive that backend through the OpenAI
+     * Responses API (e.g. for {@code gpt-5.5}).
+     *
+     * @param baseUrl        OpenAI-compatible base URL, e.g. https://api.openai.com/v1
+     * @param apiKey         API key; real key for OpenAI, any non-blank placeholder for local runtimes
+     * @param model          default chat model id for this backend, e.g. gpt-4o-mini, ai/gemma3
+     * @param embeddingModel default embedding model id, or {@code null}/blank if this backend can't embed
+     * @param api            wire protocol for chat: {@code "chat"} (default) or {@code "responses"}
      */
     public record Backend(
             @NotBlank String baseUrl,
             @NotBlank String apiKey,
-            @NotBlank String model) {
+            @NotBlank String model,
+            String embeddingModel,
+            String api) {
+
+        /** Normalise the optional {@code api} flavour to {@code "chat"} when absent/blank. */
+        public Backend {
+            api = (api == null || api.isBlank()) ? "chat" : api.toLowerCase(java.util.Locale.ROOT);
+        }
+
+        /** True when this backend has an embedding model configured. */
+        public boolean hasEmbedding() {
+            return embeddingModel != null && !embeddingModel.isBlank();
+        }
+
+        /** True when chat should be driven through the OpenAI Responses API rather than Chat Completions. */
+        public boolean usesResponsesApi() {
+            return "responses".equals(api);
+        }
     }
 }
