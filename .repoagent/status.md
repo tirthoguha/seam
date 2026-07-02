@@ -16,11 +16,14 @@ agents-in-Seam direction (agents = named versioned presets; design discussed 202
 - Open WebUI pinned to `v0.10.2` in `compose.openwebui.yaml` (was floating `main`), 2026-07-02.
 
 ## Next
-- **Commit the BYOK change** (owner action — working tree holds it uncommitted).
-- **Merge `chore/repoagent-operating-pack` → `main`** (owner action, still pending).
-- Then: **agents-as-presets first cut** (yml-defined `app.llm.agents.<name>`, exposed via
-  `/v1/models` as `agent:<name>`; versioning + tenancy per the agreed design), or pick from
+- **Agents-as-presets first cut** (yml-defined `app.llm.agents.<name>`, exposed via `/v1/models`
+  as `agent:<name>`; versioning + tenancy per the agreed design), or pick from
   [`tasks.md`](tasks.md) T2/T3.
+- **BYOK transport guards** (agreed 2026-07-02, not yet built): reject key-set over insecure
+  non-loopback transport; refuse real keys against non-HTTPS upstream base URLs.
+
+(BYOK committed and merged: `chore/repoagent-operating-pack` fast-forwarded into `main` and pushed,
+commit `a1f360b`, 2026-07-02.)
 
 ## Blocked
 None.
