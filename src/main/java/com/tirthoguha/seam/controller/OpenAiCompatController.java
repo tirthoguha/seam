@@ -25,6 +25,7 @@ import com.tirthoguha.seam.dto.openai.OpenAiChatCompletionResponse;
 import com.tirthoguha.seam.dto.openai.OpenAiEmbeddingsRequest;
 import com.tirthoguha.seam.dto.openai.OpenAiEmbeddingsResponse;
 import com.tirthoguha.seam.dto.openai.OpenAiModelList;
+import com.tirthoguha.seam.provider.BackendNotConfiguredException;
 import com.tirthoguha.seam.provider.ChatPrompt;
 import com.tirthoguha.seam.provider.ChatResult;
 import com.tirthoguha.seam.provider.ChatStreamEvent;
@@ -67,7 +68,8 @@ public class OpenAiCompatController {
      * each backend's own {@code /v1/models}. If a backend can't be listed (unreachable, bad key, …)
      * it falls back to that backend's configured chat + embedding defaults, so the endpoint never
      * fully fails and the defaults are always selectable. Backend-reported ids are passed through
-     * verbatim (backends accept their own ids for routing).
+     * verbatim (backends accept their own ids for routing). Declared-but-keyless backends are
+     * omitted entirely — advertising models that every call would 503 on just breaks clients.
      */
     @GetMapping("/v1/models")
     public OpenAiModelList models() {
@@ -77,6 +79,9 @@ public class OpenAiCompatController {
             List<String> ids;
             try {
                 ids = chatService.availableModels(name);
+            } catch (BackendNotConfiguredException e) {
+                log.info("Backend '{}' has no API key — omitting its models", name);
+                return;
             } catch (RuntimeException e) {
                 log.warn("Listing models for backend '{}' failed; using configured defaults", name, e);
                 ids = List.of();

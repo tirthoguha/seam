@@ -17,13 +17,15 @@ services:
       # gemma3 does NOT (it emits an unparsed tool_code text block), so don't point the tool demo at it.
       DMR_MODEL: ai/gemma4:E2B
       # Real OpenAI key (so the `openai` backend / openai:gpt-4o-mini model works). Set it in the
-      # gitignored .env (OPENAI_API_KEY=sk-...). Left empty, the openai model just returns a 502.
+      # gitignored .env (OPENAI_API_KEY=sk-...). Unset, the app boots with the openai backend
+      # unconfigured (its models are omitted from /v1/models); supply a key later without a
+      # restart:  PUT /admin/backends/openai/key  {"apiKey":"sk-..."}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     expose:
       - "8080"   # reachable by open-webui over the compose network; no host port needed
 
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    image: ghcr.io/open-webui/open-webui:v0.10.2
     ports:
       - "3000:8080"   # the UI: http://localhost:3000
     environment:

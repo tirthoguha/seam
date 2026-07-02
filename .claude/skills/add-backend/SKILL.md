@@ -19,13 +19,17 @@ local model) needs **no Java code** — only config. The existing `OpenAiChatPro
        backends:
          <name>:
            base-url: ${<NAME>_BASE_URL:http://...}/v1
-           api-key:  ${<NAME>_API_KEY:placeholder}   # SDK needs non-blank even if the runtime ignores it
+           # Keyless-auth runtime (Ollama, Model Runner): use a non-blank placeholder so the backend
+           # is configured at boot. Cloud backend: default to empty (${..._API_KEY:}) — it then boots
+           # declared-but-unconfigured and a key can be supplied at runtime (BYOK):
+           #   PUT /admin/backends/<name>/key  {"apiKey":"..."}
+           api-key:  ${<NAME>_API_KEY:placeholder}
            model:    ${<NAME>_MODEL:<default-model>}
    ```
    Follow the existing `docker` / `openai` entries as templates. Use `${ENV:default}` placeholders.
-2. `OpenAiConfig` builds one `OpenAIClient` + `OpenAiChatProvider` per configured backend and
-   registers it in `ChatProviderRegistry` — confirm it iterates all backends (it should already), so
-   no change is usually needed. If wiring is explicit per-backend, add the new one there.
+2. `BackendProvisioner` provisions every declared backend from its current key (env/yml seed or
+   runtime BYOK) through `OpenAiConfig`'s `ProviderFactory` — no wiring change needed for a new
+   `/v1` backend.
 3. The OpenAI-compat gateway will auto-advertise it at `GET /v1/models` as `<name>:<default-model>`.
 
 ## Case B — Native (non-`/v1`) backend
@@ -36,15 +40,17 @@ Only if the runtime does NOT speak the OpenAI `/v1` API. Then implement the seam
    (`name()`, `chat(ChatPrompt)`, `streamTokens(ChatPrompt, Consumer<String>)`).
 2. **Keep SDK/HTTP details inside that class.** Translate to/from `ChatPrompt` / `ChatResult`. Wrap
    failures in `ChatProviderException`.
-3. Register the instance in `OpenAiConfig` (or the registry builder) under its backend name.
+3. Register the instance under its backend name — either via `ChatProviderRegistry.register(...)`
+   at startup or by teaching `BackendProvisioner`/`ProviderFactory` about the new flavour.
 4. Controller, `ChatService`, and DTOs stay untouched.
 
 ## Invariants you must not break (see `.repoagent/knowledge.md`)
 
 - **Seam containment:** `com.openai.*` imports stay in `provider/openai/` + `config/OpenAiConfig.java`
   only. A native backend must NOT import the OpenAI SDK.
-- **Fail-fast config:** every backend needs non-blank `base-url`, `api-key`, `model` or boot fails
-  (that's intended).
+- **Fail-fast config:** every backend needs non-blank `base-url` + `model` or boot fails (intended).
+  `api-key` is optional by design: keyless = declared-but-unconfigured (503 until a key arrives via
+  env or `PUT /admin/backends/<name>/key`).
 - **No new executors** for streaming — reuse the shared `AsyncConfig.STREAM_EXECUTOR` via
   `ChatService.runStream`.
 

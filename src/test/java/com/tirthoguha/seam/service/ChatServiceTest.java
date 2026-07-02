@@ -51,8 +51,9 @@ class ChatServiceTest {
         LlmProperties props = new LlmProperties("docker", Map.of(
                 "docker", new LlmProperties.Backend("http://localhost:12434/engines/v1", "docker", "ai/gemma3", null, null),
                 "openai", new LlmProperties.Backend("https://api.openai.com/v1", "k", "gpt-4o-mini", null, null)));
-        ChatProviderRegistry registry = new ChatProviderRegistry(
-                Map.of("docker", docker, "openai", openai), "docker");
+        ChatProviderRegistry registry = new ChatProviderRegistry(java.util.Set.of("docker", "openai"), "docker");
+        registry.register("docker", docker);
+        registry.register("openai", openai);
         // Run streaming inline so the test is deterministic (no real thread pool needed).
         Executor directExecutor = Runnable::run;
         service = new ChatService(registry, props, directExecutor);

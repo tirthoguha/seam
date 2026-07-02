@@ -25,7 +25,10 @@ app:
     backends:
       openai:
         base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
-        api-key: ${OPENAI_API_KEY:not-needed}
+        # Optional (BYOK): unset, the app still boots and the openai backend is declared but
+        # unconfigured (requests to it 503 with a clear message). Supply/rotate at runtime via
+        #   PUT /admin/backends/openai/key   {"apiKey":"sk-..."}
+        api-key: ${OPENAI_API_KEY:}
         model: ${OPENAI_MODEL:gpt-4o-mini}
         embedding-model: ${OPENAI_EMBED_MODEL:text-embedding-3-small}
         # Wire protocol for chat: "chat" (Chat Completions, default) or "responses" (Responses API).

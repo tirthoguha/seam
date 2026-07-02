@@ -40,7 +40,9 @@ choice. Full detail + glossary: [`.repoagent/knowledge.md`](.repoagent/knowledge
    event; the `/v1` gateway sends `chat.completion.chunk` JSON + a literal `data: [DONE]`. Never
    emit raw token text (SSE strips a leading space).
 3. **Fail-fast config.** `app.llm.*` binds to a `@Validated` immutable record (`LlmProperties`);
-   missing default / empty backends / blank fields must stop boot, not error on first request.
+   missing default / empty backends / unknown default name / blank required fields must stop boot,
+   not error on first request. Exception by design: `api-key` is optional — a keyless backend boots
+   declared-but-unconfigured (503 with remedy at call time; BYOK via `/admin/backends`).
 4. **Shared stream executor.** SSE runs on `AsyncConfig.STREAM_EXECUTOR`. Never spawn per-request
    executors.
 5. **Backend-agnostic core.** `ChatService` owns no provider-specific code; everything routes

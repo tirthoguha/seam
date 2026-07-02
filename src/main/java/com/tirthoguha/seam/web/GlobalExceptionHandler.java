@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
+import com.tirthoguha.seam.provider.BackendNotConfiguredException;
 import com.tirthoguha.seam.provider.ChatProviderException;
 
 import jakarta.validation.ConstraintViolationException;
@@ -67,6 +68,17 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ProblemDetail handleBadArgument(IllegalArgumentException ex) {
         ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
         pd.setTitle("Bad request");
+        return pd;
+    }
+
+    /**
+     * Caller named a backend that is declared but currently keyless. Server-side state, not a
+     * caller mistake — 503 with the remedy in the detail (set a key via the admin API or env).
+     */
+    @ExceptionHandler(BackendNotConfiguredException.class)
+    public ProblemDetail handleBackendNotConfigured(BackendNotConfiguredException ex) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage());
+        pd.setTitle("Backend not configured");
         return pd;
     }
 

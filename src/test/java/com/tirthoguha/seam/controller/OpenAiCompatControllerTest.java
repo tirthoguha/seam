@@ -101,6 +101,20 @@ class OpenAiCompatControllerTest {
     }
 
     @Test
+    void models_omitsDeclaredButKeylessBackends() throws Exception {
+        // openai has no key: its models must disappear from the list (not fall back to defaults),
+        // otherwise clients offer entries that every call would 503 on.
+        when(chatService.availableModels("docker")).thenReturn(List.of("ai/gemma3"));
+        when(chatService.availableModels("openai"))
+                .thenThrow(new com.tirthoguha.seam.provider.BackendNotConfiguredException("openai"));
+
+        mockMvc.perform(get("/v1/models"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].id").value("docker:ai/gemma3"));
+    }
+
+    @Test
     void completions_blocking_returnsOpenAiChatCompletionShape() throws Exception {
         when(chatService.complete(any(), any(), any(), any(), any(), any()))
                 .thenReturn(ChatResult.text("docker", "ai/gemma3", "hello!"));

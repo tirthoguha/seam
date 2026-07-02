@@ -1,39 +1,49 @@
 # Handoff — Seam
 
-> What changed, what remains, what's next. Last updated: 2026-07-01.
+> What changed, what remains, what's next. Last updated: 2026-07-02.
 
 ## What changed this run
-Bootstrapped the durable operating pack that `AGENTS.md`/`CLAUDE.md` referenced but which never
-existed on disk (the `.repoagent/` directory was empty). Created, all evidence-grounded:
-- `repo_profile.md` — classification (POC Spring Boot service + agent-bootstrap repo), stack
-  (Java 17 / Spring Boot 3.3.5 / openai-java 4.41.0), personas, risks, recommended shape.
-- `operating_summary.md` — single-supervisor architecture, milestone, guardrails, skill+agent registries.
-- `knowledge.md` — the 5 invariants, conventions, glossary, default-backend table, and the
-  tested-model tool-calling matrix + download→test→delete workflow (referenced by `CLAUDE.md`).
-- `decisions.md` — D1–D8 (seam, offline-first, dual wire protocol, gateway, fail-fast, docs-sync,
-  single supervisor, this bootstrap).
-- `failures.md` — F1 doc drift, F2 missing pack; plus a repeated-mistake watchlist.
-- `tasks.md` — now/next/blocked/improve/recurring.
-- `status.md` — live health.
-- `handoff.md` — this file.
+**BYOK key layer** (decision D9), the first slice of the agents-in-Seam direction:
+- `LlmProperties`: `api-key` optional per backend; unknown `default-backend` now fails at bind time;
+  new `Backend.hasKey()`.
+- `provider/`: new `BackendNotConfiguredException` (declared-but-keyless, → 503) and SDK-free
+  `ProviderFactory` interface. Both registries became mutable: declared-names set +
+  `register`/`deregister`/`isProvisioned`; `get()` distinguishes 400 (undeclared) from 503 (keyless).
+- `service/BackendProvisioner`: owns runtime keys (in-memory, seeded from env/yml, never
+  persisted/logged/echoed) and the single provisioning path; rebuilds/tears down providers on key
+  set/clear.
+- `config/OpenAiConfig`: registries start empty; all SDK construction behind the `ProviderFactory`
+  bean (invariant #1 intact).
+- `controller/AdminController`: `GET /admin/backends`, `PUT|DELETE /admin/backends/{name}/key`
+  (unauthenticated — local PoC only). `GlobalExceptionHandler`: 503 mapping.
+  `OpenAiCompatController.models()`: omits keyless backends.
+- Config: `application.yml` openai `api-key` defaults empty (was `not-needed` hack);
+  `compose.openwebui.yaml` likewise. Docker keeps its `docker` placeholder (Model Runner ignores it).
+- Docs synced: `CLAUDE.md`, `README.md`, `AGENTS.md` invariant #3 wording,
+  `.claude/skills/add-backend/SKILL.md`, `knowledge.md`, `decisions.md` (D9), `status.md`.
+- Also this session: Open WebUI image pinned `main` → `v0.10.2` and stack redeployed (healthy).
 
 ## Verification performed
-- `mvn test` → **50 tests, 0 failures, BUILD SUCCESS**.
-- `grep -rl 'import com.openai' src/main/java` → only `provider/openai/*` + `config/OpenAiConfig.java`
-  (invariant #1 holds).
-- Stack/config facts cross-checked against `pom.xml` and `application.yml`.
+- `mvn test` → **61 tests, 0 failures, BUILD SUCCESS** (new: AdminControllerTest, BYOK lifecycle in
+  OpenAiConfigTest, 503 mapping in ChatControllerTest, models-omission in OpenAiCompatControllerTest).
+- Invariant grep → only `provider/openai/*` + `config/OpenAiConfig.java`.
+- Live smoke (app booted with `OPENAI_API_KEY` unset): `/admin/backends` shows openai unconfigured;
+  chat against it → 503 ProblemDetail with remedy; `PUT` key → configured, models listed; `DELETE`
+  → gone again. App instance stopped afterwards.
 
 ## What remains / what's next
-- **T1 done:** owner chose un-ignore + commit. `.repoagent/` removed from `.gitignore`; pack
-  committed on branch `chore/repoagent-operating-pack`. **Remaining owner action:** merge that
-  branch into `main`.
-- **T2 — automate the docs-sync guardrail** (F1 has no enforcement).
-- **T3 — automate the invariant grep** as a test.
-See [`tasks.md`](tasks.md) for details and verification criteria.
+- **Owner: commit this change** (working tree, branch `chore/repoagent-operating-pack`) and merge
+  the branch into `main`.
+- **Agents-as-presets first cut** (design agreed in chat 2026-07-02, recorded intent in
+  `status.md`): yml-defined `app.llm.agents.<name>` → resolver merges system prompt/tools/sampling
+  into `ChatPrompt`; exposed via `/v1/models` as `agent:<name>`; identity `(tenant=default, name)`;
+  single `model: "<backend>:<model>"` string in the definition; immutable versions + `@N` pinning
+  when persistence arrives. Tool-execution loops and RAG/knowledge deliberately out of scope.
+- T2 (docs-sync automation) / T3 (invariant grep as a test) still open in `tasks.md`.
 
 ## Blocked
 None.
 
 ## Note for the next agent
-The pack is now the canonical memory. Re-enter via `AGENTS.md` → this pack. Do not rely on chat
-state. End every meaningful run by updating `status.md` + this file.
+The pack is the canonical memory. Re-enter via `AGENTS.md` → this pack. The admin key endpoints are
+deliberately unauthenticated — do not deploy multi-user without adding auth + tenant scoping (D9).

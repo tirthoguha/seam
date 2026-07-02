@@ -49,7 +49,13 @@ Breaking one is a bug, not a style choice. Do not break without a [decision reco
   keep the SDK out of the core.
 - **Backend** — a configured runtime (`app.llm.backends.<name>`): base URL + key + model(s) + api.
   Ships with `docker` (local Model Runner) and `openai` (cloud).
-- **Registry** — one provider instance per configured backend, keyed by name, for app lifetime.
+- **Registry** — one provider instance per *provisioned* backend, keyed by name. Declared (in
+  `app.llm.backends`) ≠ provisioned (currently holding an API key): declared-but-keyless → 503
+  `BackendNotConfiguredException`; undeclared → 400 `IllegalArgumentException`.
+- **BackendProvisioner / BYOK** — runtime key owner: seeds from env/yml, `PUT/DELETE
+  /admin/backends/<name>/key` sets/rotates/removes without restart (providers rebuilt via
+  `ProviderFactory`, the SDK-free construction seam implemented in `OpenAiConfig`). Keys are
+  in-memory only, never persisted/logged/echoed.
 - **Gateway** — `OpenAiCompatController`, the OpenAI-compatible `/v1` surface (models, chat
   completions, embeddings) so OpenAI clients (Open WebUI) can drive both chat and RAG.
 - **Native tool calling** — gateway maps inbound `tools`/`tool_choice`/`role:"tool"` onto agnostic
@@ -63,8 +69,10 @@ Breaking one is a bug, not a style choice. Do not break without a [decision reco
 | `openai` | `https://api.openai.com/v1` | `gpt-4o-mini` | `text-embedding-3-small` | `chat` (`responses` opt-in) |
 
 Default backend: `DEFAULT_BACKEND` env / `--app.llm.default-backend` (docker profile flips to
-`docker`). SDK needs a non-blank key even locally (`docker` uses placeholder `docker`, ignored by
-Model Runner).
+`docker`). `api-key` is optional (BYOK): unset → declared-but-unconfigured, boots fine, `/v1/models`
+omits it, 503 on use until a key arrives (env or `PUT /admin/backends/<name>/key`). Keyless-auth
+local runtimes still need a non-blank placeholder to count as configured (`docker` uses the literal
+`docker`, ignored by Model Runner).
 
 ## Tested-model support matrix (native tool calling)
 

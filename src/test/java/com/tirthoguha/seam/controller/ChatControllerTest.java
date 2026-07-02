@@ -58,6 +58,19 @@ class ChatControllerTest {
     }
 
     @Test
+    void mapsUnconfiguredBackendTo503() throws Exception {
+        // Declared-but-keyless backend: server state, not caller error — 503 with the remedy.
+        when(chatService.chat(any(), any(), any()))
+                .thenThrow(new com.tirthoguha.seam.provider.BackendNotConfiguredException("openai"));
+
+        mockMvc.perform(post("/chat").contentType(APPLICATION_JSON).content("{\"message\":\"hi\"}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.title").value("Backend not configured"))
+                .andExpect(jsonPath("$.detail").value(
+                        org.hamcrest.Matchers.containsString("/admin/backends/openai/key")));
+    }
+
+    @Test
     void wrongHttpMethodReturns405NotServerError() throws Exception {
         // /chat is POST-only; a GET must surface as 405, not be swallowed into a 500
         // by the catch-all handler.

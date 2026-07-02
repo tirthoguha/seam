@@ -16,9 +16,11 @@ import org.springframework.validation.annotation.Validated;
  * name one. The Spring `docker` profile just flips the default; every backend stays callable.
  *
  * <p>Immutable record with constructor binding, {@code @Validated} for fail-fast startup: a missing
- * default, an empty backend map, or a blank field in any backend stops the app from starting rather
- * than erroring on the first request. Defaults come from {@code application.yml} via
- * {@code ${ENV:default}} placeholders.
+ * default, an empty backend map, or a blank required field in any backend stops the app from
+ * starting rather than erroring on the first request. The {@code api-key} is deliberately
+ * <em>not</em> required — a keyless backend is declared-but-unconfigured (boots fine, returns a
+ * clear error until a key is supplied via env or the {@code /admin/backends} API). Defaults come
+ * from {@code application.yml} via {@code ${ENV:default}} placeholders.
  *
  * @param defaultBackend name of the backend used when a request doesn't specify one
  * @param backends       all configured backends, keyed by name (e.g. {@code openai}, {@code docker})
@@ -28,6 +30,20 @@ import org.springframework.validation.annotation.Validated;
 public record LlmProperties(
         @NotBlank String defaultBackend,
         @NotEmpty Map<String, @Valid Backend> backends) {
+
+    /**
+     * Fail fast on a default-backend typo. The default must be a <em>declared</em> backend, though
+     * not necessarily a configured one — a keyless default boots fine and errors clearly at call
+     * time (same philosophy as {@code EmbeddingProviderRegistry}'s embedding-less default).
+     */
+    public LlmProperties {
+        if (defaultBackend != null && !defaultBackend.isBlank()
+                && backends != null && !backends.isEmpty()
+                && !backends.containsKey(defaultBackend)) {
+            throw new IllegalArgumentException("Default backend '" + defaultBackend
+                    + "' is not declared. Declared backends: " + backends.keySet());
+        }
+    }
 
     /**
      * Look up a backend by name, failing clearly if it isn't configured.
@@ -46,21 +62,24 @@ public record LlmProperties(
     /**
      * One OpenAI-compatible backend (OpenAI cloud, Docker Model Runner, …).
      *
-     * <p>{@code baseUrl}, {@code apiKey}, and {@code model} are required (fail-fast at startup).
-     * {@code embeddingModel} and {@code api} are optional: a backend without an embedding model
-     * simply can't serve {@code /v1/embeddings}, and {@code api} defaults to {@code "chat"} (Chat
-     * Completions) — set it to {@code "responses"} to drive that backend through the OpenAI
+     * <p>{@code baseUrl} and {@code model} are required (fail-fast at startup). {@code apiKey},
+     * {@code embeddingModel}, and {@code api} are optional: a backend without a key is
+     * declared-but-unconfigured (bootable, but requests to it return a clear error until a key is
+     * supplied via env or {@code PUT /admin/backends/{name}/key}); a backend without an embedding
+     * model simply can't serve {@code /v1/embeddings}; and {@code api} defaults to {@code "chat"}
+     * (Chat Completions) — set it to {@code "responses"} to drive that backend through the OpenAI
      * Responses API (e.g. for {@code gpt-5.5}).
      *
      * @param baseUrl        OpenAI-compatible base URL, e.g. https://api.openai.com/v1
-     * @param apiKey         API key; real key for OpenAI, any non-blank placeholder for local runtimes
+     * @param apiKey         API key: real key for OpenAI, any non-blank placeholder for local
+     *                       runtimes, or {@code null}/blank to boot unconfigured and supply one later
      * @param model          default chat model id for this backend, e.g. gpt-4o-mini, ai/gemma3
      * @param embeddingModel default embedding model id, or {@code null}/blank if this backend can't embed
      * @param api            wire protocol for chat: {@code "chat"} (default) or {@code "responses"}
      */
     public record Backend(
             @NotBlank String baseUrl,
-            @NotBlank String apiKey,
+            String apiKey,
             @NotBlank String model,
             String embeddingModel,
             String api) {
@@ -68,6 +87,11 @@ public record LlmProperties(
         /** Normalise the optional {@code api} flavour to {@code "chat"} when absent/blank. */
         public Backend {
             api = (api == null || api.isBlank()) ? "chat" : api.toLowerCase(java.util.Locale.ROOT);
+        }
+
+        /** True when this backend has an API key configured (i.e. it can be provisioned). */
+        public boolean hasKey() {
+            return apiKey != null && !apiKey.isBlank();
         }
 
         /** True when this backend has an embedding model configured. */

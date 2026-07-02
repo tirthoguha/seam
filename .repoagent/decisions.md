@@ -58,3 +58,19 @@ which never existed on disk.
 depended on chat memory — a direct violation of the filesystem-first rule.
 **Consequence:** All eight pack files now exist, grounded in verified evidence (50 tests green,
 invariant grep clean).
+
+## D9 — Optional API keys + runtime BYOK, ahead of the agents feature (2026-07-02)
+**Decision:** `api-key` is optional per backend. A keyless backend is *declared but unconfigured*:
+the app boots, `/v1/models` omits its models, requests to it 503 with the remedy. Keys are runtime
+state owned by `BackendProvisioner` (seeded from env/yml, in-memory only), settable/rotatable/
+removable via `PUT|DELETE /admin/backends/<name>/key` with providers rebuilt immediately through
+the SDK-free `ProviderFactory` seam in `OpenAiConfig`. Registries became mutable
+(declared-names set + register/deregister).
+**Why:** The app shouldn't need a cloud key to boot (kills the `not-needed` placeholder hack), and
+the planned own-UI/agents direction needs keys as data, not boot config. Groundwork for per-tenant
+BYOK: the key lookup later becomes `(tenant, backend)`; the seam stays.
+**Consequence:** Invariant #3 gains a deliberate exception (blank `api-key` allowed; unknown
+`default-backend` now fails at bind time instead). New failure mode is typed:
+`BackendNotConfiguredException` → 503 (vs 400 for undeclared). Admin endpoints are unauthenticated —
+must gain auth + tenant scoping before any multi-user deployment. D2's placeholder-key consequence
+is superseded for cloud backends (docker keeps its `docker` placeholder).

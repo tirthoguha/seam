@@ -31,7 +31,16 @@ and OpenAI cloud for the next — no restart.
     docker model status                              # verify it's up
     docker model pull ai/gemma4:E2B                       # pull the default model
     ```
-  - **and/or OpenAI cloud** — set `OPENAI_API_KEY` (only needed when you actually call it).
+  - **and/or OpenAI cloud** — set `OPENAI_API_KEY`, or skip it entirely: the app boots without it
+    (the `openai` backend just shows as unconfigured) and you can supply a key later, at runtime,
+    without a restart (BYOK):
+    ```bash
+    curl -X PUT localhost:8080/admin/backends/openai/key \
+      -H 'Content-Type: application/json' -d '{"apiKey":"sk-..."}'
+    # GET /admin/backends shows per-backend status; DELETE .../key removes a key again.
+    ```
+    Keys set this way live in memory only (a restart falls back to the env var) and are never
+    echoed back or logged.
 
 ---
 
@@ -172,6 +181,9 @@ cloud backend (and, optionally, to speed up Open WebUI's first-boot model downlo
 OPENAI_API_KEY=sk-...     # enables the openai:gpt-4o-mini model; omit to stay local-only
 HF_TOKEN=hf_...           # optional: lifts the HuggingFace rate limit on Open WebUI's first boot
 ```
+
+No key? The app still boots — the `openai` models are simply omitted from the picker until you
+either set the env var or push a key at runtime (`PUT /admin/backends/openai/key`, see above).
 
 After editing `.env`, apply it (env-only change — no rebuild needed):
 
