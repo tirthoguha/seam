@@ -1,16 +1,25 @@
-# Seam Spring
+# Seam — provider-agnostic LLM gateway
 
-> **Concept only.** A personal proof-of-concept for demo and learning — not a maintained
-> library or product. Expect rough edges.
+One seam, any OpenAI-compatible backend — in a single Spring Boot app. Chat with **OpenAI
+cloud** and **local models** (Docker Model Runner, or any `/v1` runtime) through the **same
+code path** — one adapter on the official `com.openai:openai-java` SDK serves every backend;
+only the base URL, API key, and model id differ.
 
-One Spring Boot app that chats with **OpenAI cloud** *and* a **local model** through the
-**same code path**. The trick: both speak the **OpenAI-compatible `/v1` API**, so a single
-adapter (the official `com.openai:openai-java` SDK) works against either — only the base URL,
-API key, and model id change.
+Every request picks its backend and model on the fly (`"backend"` field, or `<backend>:<model>`
+on the `/v1` gateway); otherwise a configurable default answers. Run a local model for one call
+and cloud for the next — no restart, no code change. It also *speaks* the OpenAI API, not just
+consumes it: the built-in **OpenAI-compatible gateway** (`/v1/models`, `/v1/chat/completions`,
+`/v1/embeddings`) with streaming, native **tool calling**, sampling params, and vision input
+means clients like Open WebUI plug straight in — and get local + cloud models in one dropdown.
 
-Both backends are configured at startup. Each request picks which one answers it (a `"backend"`
-field); if it doesn't, a configurable default is used. So you can hit a local model for one call
-and OpenAI cloud for the next — no restart.
+- **One seam, N backends** — adding a backend is config, not code: Ollama, vLLM, LM Studio, or
+  any other `/v1` endpoint — including **Anthropic**'s OpenAI-compatible endpoint (not yet
+  tested). Even non-`/v1` runtimes only need a single `ChatProvider` implementation.
+- **Local-first** — boots and works fully offline against Docker Model Runner; cloud is opt-in.
+- **BYOK at runtime** — start with zero cloud keys, add/rotate/remove them via the admin API
+  without a restart; keys stay in memory, never logged or echoed.
+- **Embeddings too** — the same per-backend routing powers `/v1/embeddings`, so RAG pipelines
+  can go local or cloud with the same switch.
 
 | backend  | base URL                              | default model | needs            |
 |----------|---------------------------------------|---------------|------------------|
